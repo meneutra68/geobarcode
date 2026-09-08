@@ -1,0 +1,32 @@
+# Copilot Configuration for BrightSign SaaS Project
+project_type: saas_specification
+languages:
+  - typescript
+  - csharp
+  - go
+
+# Define domain-specific contexts
+contexts:
+  - specifications
+  - architecture
+  - implementation
+  - testing
+
+# Custom prompt templates location
+prompt_templates: prompts/
+
+# Repository structure guidance
+structure:
+  specs: docs/specifications
+  design: docs/design
+  typescript: src/typescript
+  csharp: src/csharp
+  go: src/go
+
+# Project-specific terminology and concepts
+terminology:
+  - SaaS
+  - BrightSign
+  - Device Management
+  - Content Distribution
+  - Network Management
