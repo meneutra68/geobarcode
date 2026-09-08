@@ -1,0 +1,2883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GeoBarcode">
+<meta name="theme-color" content="#0B0F14">
+<meta name="format-detection" content="telephone=no">
+<meta name="description" content="Chain-of-custody capture for display assets: scan the serial, photograph the unit in place, pin it by GPS, address or hand-set coordinates.">
+<style>
+  html { color-scheme: dark; }
+  body { margin: 0; font: 14px -apple-system, system-ui, sans-serif; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+</style>
+<title>GeoBarcode Field Capture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* ── GeoBarcode Field Capture ──────────────────────────────────────────────
+   Chain-of-custody capture for display assets: who scanned which unit,
+   where, when, with what evidence. Single instrument-dark world; every
+   colour painted explicitly so the page holds on any host ground.      */
+
+:root {
+  --ground:      #0B0F14;
+  --surface:     #141B23;
+  --surface-2:   #1D2732;
+  --hairline:    #2A3745;
+  --hairline-lo: #1E2833;
+  --ink:         #E7EDF3;
+  --ink-2:       #93A3B3;
+  --ink-3:       #63737F;
+  --accent:      #F2A33C;
+  --accent-lo:   #6B4A18;
+  --good:        #35C46E;
+  --bad:         #FF5A52;
+
+  --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --pad: 18px;
+  --safe-b: max(env(safe-area-inset-bottom), 14px);
+  --safe-t: max(env(safe-area-inset-top), 10px);
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.45;
+  overscroll-behavior: none;
+}
+body { -webkit-font-smoothing: antialiased; }
+
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+a { color: var(--accent); }
+
+/* ── shell ───────────────────────────────────────────────────────────── */
+
+#app {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  background: var(--ground);
+}
+#topbar { grid-row: 1; }
+#rail   { grid-row: 2; }
+#stage  { grid-row: 3; }
+#dock   { grid-row: 4; }
+
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: var(--safe-t) var(--pad) 10px;
+  border-bottom: 1px solid var(--hairline-lo);
+  background: var(--ground);
+  position: relative;
+  z-index: 3;
+}
+#topbar .brand {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-right: auto;
+  white-space: nowrap;
+  padding: 10px 8px 10px 0;      /* a 44pt-tall target without changing the visual */
+  margin-top: -10px; margin-bottom: -10px;
+  border-radius: 6px;
+}
+#topbar .brand:active { color: var(--ink); }
+#topbar .brand em { color: var(--accent); font-style: normal; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  padding: 5px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  color: var(--ink-2);
+  background: var(--surface);
+  white-space: nowrap;
+}
+.chip svg { width: 13px; height: 13px; flex: none; fill: none; stroke: var(--ink-3); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.chip .chev { color: var(--ink-3); font-size: 13px; line-height: 1; margin-left: -2px; }
+.chip:active { background: var(--surface-2); }
+.chip[data-s="live"]   svg { stroke: var(--good); }
+.chip[data-s="wait"]   svg { stroke: var(--accent); animation: blip 1.1s ease-in-out infinite; }
+.chip[data-s="pinned"] svg { stroke: var(--accent); fill: rgba(242,163,60,0.25); }
+.chip[data-s="fail"]   svg { stroke: var(--bad); }
+.chip[data-s="live"] #gpsTxt { color: var(--ink); }
+@keyframes blip { 50% { opacity: 0.25; } }
+
+#stage { position: relative; overflow: hidden; background: var(--ground); }
+.screen {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.screen[hidden] { display: none !important; }
+
+#dock {
+  padding: 12px var(--pad) var(--safe-b);
+  border-top: 1px solid var(--hairline-lo);
+  background: var(--ground);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+  z-index: 3;
+}
+#dock:empty { display: none; }
+#dock .hint {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  text-align: center;
+  min-height: 1.2em;
+}
+#dock .row { display: flex; gap: 8px; }
+#dock .row > * { flex: 1; }
+
+.btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 0 18px;
+  border-radius: 12px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.01em;
+  transition: transform 0.08s ease, background 0.15s ease;
+}
+.btn:active { transform: scale(0.985); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #14100A; font-weight: 700; }
+.btn.ghost { background: transparent; border-color: var(--hairline); color: var(--ink-2); }
+.btn.danger { background: transparent; border-color: #4A2320; color: var(--bad); }
+.btn[disabled] { opacity: 0.4; pointer-events: none; }
+.btn.slim { min-height: 42px; font-size: 13.5px; border-radius: 10px; }
+
+/* ── step rail: a real sequence, so it is numbered ───────────────────── */
+
+#rail { display: flex; align-items: center; padding: 10px var(--pad) 0; }
+#rail .step {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+#rail .step .bar { height: 2px; background: var(--hairline); border-radius: 2px; }
+#rail .step + .step { margin-left: 6px; }
+#rail .step[data-s="done"] { color: var(--ink-2); }
+#rail .step[data-s="done"] .bar { background: var(--good); }
+#rail .step[data-s="now"] { color: var(--accent); }
+#rail .step[data-s="now"] .bar { background: var(--accent); }
+#rail[hidden] { display: none; }
+
+/* ── camera surface ──────────────────────────────────────────────────── */
+
+.cam { position: absolute; inset: 0; background: #000; overflow: hidden; }
+.cam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.cam .scrim {
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(to bottom, rgba(11,15,20,0.55) 0%, rgba(11,15,20,0) 22%,
+                              rgba(11,15,20,0) 70%, rgba(11,15,20,0.7) 100%);
+}
+
+.reticle {
+  position: absolute;
+  left: 8%; right: 8%; top: 50%;
+  transform: translateY(-50%);
+  aspect-ratio: 4 / 3;
+  max-height: 62%;
+  margin: 0 auto;
+  pointer-events: none;
+}
+.reticle i { position: absolute; width: 30px; height: 30px; border: 3px solid var(--accent); border-radius: 3px; }
+.reticle i:nth-child(1) { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+.reticle i:nth-child(2) { top: 0; right: 0; border-left: 0; border-bottom: 0; }
+.reticle i:nth-child(3) { bottom: 0; left: 0; border-right: 0; border-top: 0; }
+.reticle i:nth-child(4) { bottom: 0; right: 0; border-left: 0; border-top: 0; }
+.reticle.hunting i { animation: hunt 1.6s ease-in-out infinite; }
+@keyframes hunt { 50% { opacity: 0.35; } }
+.reticle.hit i { border-color: var(--good); animation: none; }
+
+.sweep {
+  position: absolute; left: 6%; right: 6%; height: 1px; top: 50%;
+  background: linear-gradient(to right, transparent, var(--accent), transparent);
+  opacity: 0.75; pointer-events: none;
+  animation: sweep 2.4s ease-in-out infinite;
+}
+@keyframes sweep { 0%, 100% { transform: translateY(-90px); } 50% { transform: translateY(90px); } }
+
+.cam-note {
+  position: absolute; left: var(--pad); right: var(--pad); bottom: 14px;
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.05em; text-align: center;
+  color: #C9D4DE; text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+.cam-tools { position: absolute; top: 12px; right: 12px; display: flex; flex-direction: column; gap: 8px; }
+.cam-tools button {
+  width: 42px; height: 42px; border-radius: 50%;
+  background: rgba(11,15,20,0.6); border: 1px solid rgba(231,237,243,0.22);
+  font-size: 17px; line-height: 1; display: grid; place-items: center; color: #E7EDF3;
+}
+.cam-tools button[aria-pressed="true"] { background: var(--accent); color: #14100A; border-color: var(--accent); }
+
+/* thumbnail strip on the photo screen */
+.strip {
+  position: absolute; left: var(--pad); right: var(--pad); bottom: 40px;
+  display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px;
+  scrollbar-width: none;
+}
+.strip::-webkit-scrollbar { display: none; }
+.strip .th {
+  width: 48px; height: 48px; flex: none; border-radius: 6px;
+  background: #000 center / cover no-repeat;
+  border: 2px solid rgba(231,237,243,0.6);
+}
+.strip .th:last-child { border-color: var(--accent); }
+
+.shutter-wrap { display: flex; align-items: center; justify-content: center; }
+.shutter {
+  width: 66px; height: 66px; border-radius: 50%;
+  background: var(--ink); border: 5px solid var(--surface-2);
+  box-shadow: 0 0 0 2px var(--hairline); flex: none;
+}
+.shutter:active { transform: scale(0.94); }
+
+/* ── field ledger ────────────────────────────────────────────────────── */
+
+.pad { padding: 16px var(--pad) 20px; }
+
+.eyebrow {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-3);
+}
+h1.big {
+  font-size: 26px; line-height: 1.15; font-weight: 700; letter-spacing: -0.015em;
+  margin: 6px 0 4px; text-wrap: balance;
+}
+p.lede { color: var(--ink-2); font-size: 14.5px; margin: 0 0 4px; max-width: 34em; }
+
+.serial {
+  font-family: var(--mono);
+  font-size: clamp(20px, 6.4vw, 30px);
+  font-weight: 600; letter-spacing: -0.01em;
+  word-break: break-all; line-height: 1.2; margin: 8px 0 10px;
+}
+.serial .warn { display: inline-block; vertical-align: middle; margin-left: 8px; font-size: 11px; color: var(--bad); font-weight: 500; letter-spacing: 0.06em; }
+
+.ledger { display: flex; flex-direction: column; margin-top: 14px; }
+.ledger .row {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 11px 0; border-top: 1px solid var(--hairline-lo);
+}
+.ledger .row:last-child { border-bottom: 1px solid var(--hairline-lo); }
+.ledger .k {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-3);
+  flex: none; white-space: nowrap;
+}
+.ledger .v {
+  font-family: var(--mono); font-size: 13.5px; font-variant-numeric: tabular-nums;
+  color: var(--ink); word-break: break-word; margin-left: auto; text-align: right;
+}
+.ledger .v.wide { text-align: left; margin-left: 0; }
+.ledger .v small { color: var(--ink-3); font-size: 11px; }
+
+.acc { font-family: var(--mono); font-size: 12px; }
+.acc[data-q="good"] { color: var(--good); }
+.acc[data-q="fair"] { color: var(--accent); }
+.acc[data-q="poor"] { color: var(--bad); }
+
+/* photo plates */
+.plates { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 14px; }
+.plates .p {
+  aspect-ratio: 1; border-radius: 8px; border: 1px solid var(--hairline);
+  background: #000 center / cover no-repeat; position: relative; overflow: hidden;
+  padding: 0; display: block; width: 100%;
+}
+.plates .p .tick {
+  position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%;
+  background: rgba(11,15,20,0.7); border: 1.5px solid rgba(231,237,243,0.5);
+  display: grid; place-items: center; font-size: 12px; color: transparent;
+}
+.plates .p[aria-pressed="true"] .tick { background: var(--good); border-color: var(--good); color: #0B0F14; }
+.plates .p[aria-pressed="false"] { opacity: 0.45; }
+.plates .p .n {
+  position: absolute; left: 6px; bottom: 5px; font-family: var(--mono); font-size: 10px;
+  color: #E7EDF3; text-shadow: 0 1px 2px #000;
+}
+.plates .p.add {
+  background: var(--surface); display: grid; place-items: center;
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; color: var(--ink-2);
+  border-style: dashed;
+}
+
+/* ── map ─────────────────────────────────────────────────────────────── */
+
+.mapbox {
+  width: 100%; aspect-ratio: 4 / 3; border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--hairline); background: var(--surface); margin-top: 14px; position: relative;
+}
+.mapbox[hidden] { display: none !important; }
+.mapbox .leaflet-tile-pane { filter: invert(1) hue-rotate(190deg) brightness(0.86) contrast(0.9) saturate(0.5); }
+.mapbox .leaflet-control-attribution {
+  background: rgba(11,15,20,0.75); color: var(--ink-3); font-family: var(--mono); font-size: 9px;
+}
+.mapbox .leaflet-control-attribution a { color: var(--ink-2); }
+.pin { width: 22px; height: 22px; }
+.pin i {
+  display: block; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--accent); border: 3px solid #0B0F14; box-shadow: 0 0 0 2px var(--accent);
+}
+.pin.small i { width: 14px; height: 14px; border-width: 2px; box-shadow: 0 0 0 1.5px var(--accent); }
+.pin.small { width: 14px; height: 14px; }
+.mapbox .cross {
+  position: absolute; left: 50%; top: 50%; width: 1px; height: 1px; pointer-events: none;
+}
+.map-hint {
+  position: absolute; left: 8px; bottom: 8px; z-index: 900;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
+  color: var(--ink-2); background: rgba(11,15,20,0.75); padding: 3px 7px; border-radius: 4px;
+  pointer-events: none;
+}
+
+/* Leaflet core (subset, hand-inlined: the CSP admits no external stylesheets) */
+.leaflet-pane,.leaflet-tile,.leaflet-marker-icon,.leaflet-marker-shadow,.leaflet-tile-container,
+.leaflet-pane>svg,.leaflet-pane>canvas,.leaflet-zoom-box,.leaflet-image-layer,.leaflet-layer{position:absolute;left:0;top:0}
+.leaflet-container{overflow:hidden;background:#0B0F14;-webkit-tap-highlight-color:transparent;font-family:var(--mono)}
+.leaflet-tile,.leaflet-marker-icon,.leaflet-marker-shadow{-webkit-user-select:none;user-select:none;-webkit-user-drag:none}
+.leaflet-marker-icon,.leaflet-marker-shadow{display:block}
+.leaflet-container .leaflet-overlay-pane svg{max-width:none!important;max-height:none!important}
+.leaflet-container .leaflet-marker-pane img,.leaflet-container .leaflet-shadow-pane img,
+.leaflet-container .leaflet-tile-pane img,.leaflet-container img.leaflet-image-layer,
+.leaflet-container .leaflet-tile{max-width:none!important;max-height:none!important;width:auto;padding:0}
+.leaflet-tile{filter:inherit;visibility:hidden}
+.leaflet-tile-loaded{visibility:inherit}
+.leaflet-zoom-box{width:0;height:0;box-sizing:border-box;z-index:800}
+.leaflet-pane{z-index:400}.leaflet-tile-pane{z-index:200}.leaflet-overlay-pane{z-index:400}
+.leaflet-shadow-pane{z-index:500}.leaflet-marker-pane{z-index:600}.leaflet-tooltip-pane{z-index:650}
+.leaflet-popup-pane{z-index:700}.leaflet-map-pane canvas{z-index:100}.leaflet-map-pane svg{z-index:200}
+.leaflet-control{position:relative;z-index:800;pointer-events:auto;float:left;clear:both}
+.leaflet-right .leaflet-control{float:right}
+.leaflet-top,.leaflet-bottom{position:absolute;z-index:1000;pointer-events:none}
+.leaflet-top{top:0}.leaflet-right{right:0}.leaflet-bottom{bottom:0}.leaflet-left{left:0}
+.leaflet-control-attribution{margin:0;padding:0 5px;line-height:1.5}
+.leaflet-zoom-animated{transform-origin:0 0}
+svg.leaflet-zoom-animated{will-change:transform}
+.leaflet-zoom-anim .leaflet-zoom-animated{transition:transform .25s cubic-bezier(0,0,.25,1)}
+.leaflet-zoom-anim .leaflet-tile,.leaflet-pan-anim .leaflet-tile{transition:none}
+.leaflet-zoom-anim .leaflet-zoom-hide{visibility:hidden}
+.leaflet-interactive{cursor:pointer}.leaflet-grab{cursor:grab}.leaflet-marker-draggable{cursor:move}
+.leaflet-dragging .leaflet-grab,.leaflet-dragging .leaflet-marker-draggable{cursor:grabbing}
+
+/* ── centered states ─────────────────────────────────────────────────── */
+
+.centre {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; padding: 24px var(--pad); text-align: center;
+}
+.centre h2 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.centre p { color: var(--ink-2); font-size: 14px; margin: 0; max-width: 30em; }
+.ring {
+  width: 46px; height: 46px; border-radius: 50%;
+  border: 3px solid var(--hairline); border-top-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.stamp { width: 60px; height: 60px; border-radius: 50%; display: grid; place-items: center; font-size: 27px; line-height: 1; border: 2px solid; }
+.stamp.ok  { border-color: var(--good); color: var(--good); }
+.stamp.err { border-color: var(--bad);  color: var(--bad); }
+.echo { width: 100%; max-width: 360px; text-align: left; }
+
+/* ── records ─────────────────────────────────────────────────────────── */
+
+.tabs { display: flex; gap: 4px; padding: 10px var(--pad) 0; border-bottom: 1px solid var(--hairline-lo); }
+.tabs button {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 8px 12px 10px; color: var(--ink-3); border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+.tabs .n { margin-left: auto; align-self: center; font-family: var(--mono); font-size: 11px; color: var(--ink-3); padding-bottom: 4px; }
+
+.rec {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  padding: 12px var(--pad); border-bottom: 1px solid var(--hairline-lo); background: none;
+}
+.rec:active { background: var(--surface); }
+.rec .thumb {
+  width: 52px; height: 52px; border-radius: 8px;
+  background: var(--surface-2) center / cover no-repeat; border: 1px solid var(--hairline);
+  flex: none; display: grid; place-items: center;
+  font-family: var(--mono); font-size: 9px; color: var(--ink-3); position: relative;
+}
+.rec .thumb .more {
+  position: absolute; right: -4px; bottom: -4px; background: var(--accent); color: #14100A;
+  font-size: 9px; font-weight: 600; padding: 1px 5px; border-radius: 999px;
+}
+.rec .body { min-width: 0; flex: 1; }
+.rec .code { font-family: var(--mono); font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec .meta {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.04em; color: var(--ink-3);
+  margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rec .flag {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.1em; padding: 3px 7px;
+  border-radius: 999px; border: 1px solid var(--hairline); color: var(--ink-3); flex: none;
+}
+.rec .flag[data-s="sent"]   { color: var(--good); border-color: #1F4630; }
+.rec .flag[data-s="failed"] { color: var(--bad); border-color: #4A2320; }
+.rec .count {
+  font-family: var(--mono); font-size: 12px; color: var(--ink-2); flex: none;
+  min-width: 44px; text-align: right;
+}
+.rec .count b { display: block; font-size: 16px; color: var(--ink); font-weight: 600; }
+
+.empty { padding: 44px var(--pad); text-align: center; color: var(--ink-3); font-size: 14px; }
+
+/* custody timeline */
+.tl { padding: 6px var(--pad) 20px; }
+.tl .ev { display: grid; grid-template-columns: 18px 1fr; gap: 12px; }
+.tl .ev .spine { position: relative; }
+.tl .ev .spine::before { content: ""; position: absolute; left: 8px; top: 0; bottom: 0; width: 1px; background: var(--hairline); }
+.tl .ev:first-child .spine::before { top: 14px; }
+.tl .ev:last-child .spine::before { bottom: auto; height: 14px; }
+.tl .ev .spine i {
+  position: absolute; left: 4px; top: 10px; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--ink-3); border: 2px solid var(--ground);
+}
+.tl .ev:first-child .spine i { background: var(--accent); }
+.tl .ev .card { padding: 8px 0 16px; text-align: left; width: 100%; }
+.tl .ev .when { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+.tl .ev .where { font-family: var(--mono); font-size: 11px; color: var(--ink-3); margin-top: 3px; }
+.tl .ev .who { font-size: 12.5px; color: var(--ink-2); margin-top: 3px; }
+
+/* ── forms ───────────────────────────────────────────────────────────── */
+
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.field label {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-3);
+}
+.field .help { font-size: 12px; color: var(--ink-3); line-height: 1.4; }
+.field input, .field textarea {
+  font-family: var(--mono); font-size: 16px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--hairline); border-radius: 10px;
+  padding: 12px 13px; width: 100%;
+}
+.field textarea { min-height: 84px; resize: vertical; font-family: var(--sans); font-size: 15px; }
+.field input::placeholder, .field textarea::placeholder { color: var(--ink-3); }
+.field input:focus, .field textarea:focus { border-color: var(--accent); outline: none; }
+.field input[aria-invalid="true"] { border-color: var(--bad); }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.two .field { margin-bottom: 0; }
+
+.coords { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.coords .field { margin-bottom: 0; }
+.coords input { font-size: 16px; padding: 10px 11px; }   /* ≥16px so iOS does not zoom on focus */
+
+.note {
+  font-size: 12.5px; line-height: 1.5; color: var(--ink-2);
+  background: var(--surface); border: 1px solid var(--hairline-lo); border-left: 2px solid var(--accent);
+  border-radius: 0 8px 8px 0; padding: 11px 13px; margin: 14px 0;
+}
+.note b { color: var(--ink); font-weight: 600; }
+.note code { font-family: var(--mono); font-size: 11.5px; color: var(--accent); }
+.note.quiet { border-left-color: var(--hairline); }
+
+.section-head {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 22px var(--pad) 8px; border-bottom: 1px solid var(--hairline-lo);
+}
+.section-head.inset { padding-left: 0; padding-right: 0; }
+.section-head .n { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+
+details.opt { margin-top: 16px; border-top: 1px solid var(--hairline-lo); }
+details.opt summary {
+  list-style: none; cursor: pointer; padding: 12px 0;
+  display: flex; align-items: center; gap: 10px;
+}
+details.opt summary::-webkit-details-marker { display: none; }
+details.opt summary .eyebrow { flex: 1; }
+details.opt summary .n { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+details.opt summary::after { content: "+"; font-family: var(--mono); color: var(--ink-3); }
+details.opt[open] summary::after { content: "–"; }
+
+.iconbtn {
+  width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--hairline);
+  background: var(--surface); display: grid; place-items: center; font-size: 15px; flex: none;
+}
+
+.who-line { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding: 10px 0; border-top: 1px solid var(--hairline-lo); border-bottom: 1px solid var(--hairline-lo); }
+.who-line .av {
+  width: 34px; height: 34px; border-radius: 50%; background: var(--surface-2); border: 1px solid var(--hairline);
+  display: grid; place-items: center; font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--accent); flex: none;
+}
+.who-line .t { min-width: 0; flex: 1; }
+.who-line .t b { display: block; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.who-line .t span { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.who-line.top { margin-top: 0; border-top: 0; padding-top: 2px; }
+
+/* ── home: site card, shortcut tiles, recent ─────────────────────────── */
+
+.site {
+  margin-top: 14px; padding: 12px 14px;
+  border: 1px solid var(--hairline); border-radius: 12px; background: var(--surface);
+}
+.site .head { display: flex; align-items: center; gap: 12px; }
+.site .head .t { flex: 1; min-width: 0; }
+.site .head .val {
+  font-family: var(--mono); font-size: 14px; font-weight: 500; margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.site .head .val.none { color: var(--ink-3); font-weight: 400; }
+.site .head .btn { flex: none; min-height: 36px; padding: 0 14px; font-size: 13px; border-radius: 9px; }
+.site .edit { display: none; margin-top: 12px; }
+.site[data-editing="true"] .edit { display: block; }
+.site .edit .two { margin-bottom: 10px; }
+.site .edit .row { display: flex; gap: 8px; }
+.site .edit .row > * { flex: 1; }
+.site .edit input { font-size: 16px; padding: 10px 11px; }
+
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
+.tile {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; gap: 12px;
+  min-height: 92px; padding: 13px 14px; text-align: left;
+  border: 1px solid var(--hairline); border-radius: 12px; background: var(--surface);
+  transition: transform 0.08s ease;
+}
+.tile:active { transform: scale(0.98); }
+.tile svg { width: 22px; height: 22px; stroke: var(--accent); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.tile .t { font-weight: 600; font-size: 14.5px; line-height: 1.2; }
+.tile .s { font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--ink-3); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.tile.hot { border-color: var(--accent); background: linear-gradient(180deg, rgba(242,163,60,0.10), rgba(242,163,60,0.02)); }
+.tile.hot .s { color: var(--accent); }
+.tile.quiet svg { stroke: var(--ink-3); }
+.tile[disabled] { opacity: 0.45; pointer-events: none; }
+
+/* identity row with the handoff QR at its right edge */
+.who-row { display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--hairline-lo); padding-bottom: 10px; }
+.who-row .who-line { flex: 1; min-width: 0; border-bottom: 0; padding-bottom: 0; }
+.qr-mini {
+  flex: none; display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 0; line-height: 0;
+}
+.qr-mini canvas {
+  width: 84px; height: 84px; display: block; image-rendering: pixelated;
+  background: #FFFFFF; border-radius: 8px; padding: 5px; border: 1px solid var(--hairline);
+}
+.qr-mini .qr-lab { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); line-height: 1; }
+.qr-mini:active canvas { transform: scale(0.97); }
+.qr-mini.off canvas { background: var(--surface); border-style: dashed; padding: 0; }
+@media (min-width: 700px) { .qr-mini canvas { width: 112px; height: 112px; } }
+
+/* enlarged QR in the lightbox */
+.lightbox .lb-cap {
+  width: min(92vw, 420px); text-align: center; color: var(--ink-2); font-size: 14px; line-height: 1.45;
+}
+.lightbox .lb-cap code { display: block; font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); word-break: break-all; margin: 10px 0 12px; }
+.lightbox .lb-cap .row { display: flex; gap: 8px; }
+.lightbox .lb-cap .row > * { flex: 1; }
+.lightbox .lb-cap .note { text-align: left; margin: 12px 0 0; }
+.lightbox .lb-stack { display: flex; flex-direction: column; align-items: center; gap: 16px; max-height: 100%; overflow-y: auto; }
+.lightbox .lb-stack img { max-width: min(80vw, 360px); background: #fff; padding: 14px; border-radius: 12px; }
+
+/* geocoder results */
+.geo-res { display: flex; flex-direction: column; margin: 0 0 12px; }
+.geo-res button {
+  display: flex; flex-direction: column; gap: 3px; text-align: left; width: 100%;
+  padding: 10px 12px; border: 1px solid var(--hairline); border-top: 0; background: var(--surface);
+}
+.geo-res button:first-child { border-top: 1px solid var(--hairline); border-radius: 10px 10px 0 0; }
+.geo-res button:last-child { border-radius: 0 0 10px 10px; }
+.geo-res button:only-child { border-radius: 10px; }
+.geo-res button:active { background: var(--surface-2); }
+.geo-res .a { font-size: 14px; font-weight: 500; }
+.geo-res .b { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); letter-spacing: 0.03em; }
+.geo-res .status { padding: 10px 12px; font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+
+.recent { margin: 0 calc(-1 * var(--pad)); }
+.recent .rec:last-child { border-bottom: 0; }
+.recent .empty { padding: 22px var(--pad); }
+
+.toast {
+  position: fixed; left: 50%; bottom: calc(var(--safe-b) + 84px);
+  transform: translateX(-50%) translateY(8px);
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink);
+  font-size: 13px; padding: 10px 15px; border-radius: 999px; z-index: 40;
+  opacity: 0; pointer-events: none; transition: opacity 0.2s ease, transform 0.2s ease;
+  max-width: 86vw; text-align: center;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+.lightbox {
+  position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.94);
+  display: grid; place-items: center; padding: 20px;
+}
+.lightbox[hidden] { display: none !important; }
+.lightbox img { max-width: 100%; max-height: 100%; border-radius: 6px; }
+.lightbox > button {
+  position: absolute; top: calc(var(--safe-t) + 8px); right: 14px;
+  width: 40px; height: 40px; border-radius: 50%; background: rgba(231,237,243,0.12); color: #fff; font-size: 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001s !important; transition-duration: 0.001s !important; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <button class="brand" id="btnHome" aria-label="Home">Geo<em>Barcode</em></button>
+    <button class="chip" id="gpsChip" data-s="idle" aria-label="Location — receiver status, address search, site pin">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6-5.3-6-11a6 6 0 0 1 12 0c0 5.7-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></svg>
+      <span id="gpsTxt">Location</span>
+      <span class="chev">›</span>
+    </button>
+    <button class="iconbtn" id="btnRecords" aria-label="Capture log">▤</button>
+    <button class="iconbtn" id="btnSettings" aria-label="Settings">⚙</button>
+  </header>
+
+  <div id="rail" hidden>
+    <div class="step" data-k="scan"><span class="bar"></span>1 Scan</div>
+    <div class="step" data-k="photo"><span class="bar"></span>2 Photos</div>
+    <div class="step" data-k="fix"><span class="bar"></span>3 Fix</div>
+    <div class="step" data-k="send"><span class="bar"></span>4 Log</div>
+  </div>
+
+  <main id="stage">
+
+    <!-- SIGN IN -->
+    <section class="screen" id="s-signin" hidden>
+      <div class="pad">
+        <div class="eyebrow">Who is capturing</div>
+        <h1 class="big">Sign in to this phone</h1>
+        <p class="lede">Every capture carries the person and organisation that made it — that is what turns a scan into a custody record. Kept on this device only.</p>
+        <div class="field" style="margin-top:18px">
+          <label for="inName">Name</label>
+          <input id="inName" type="text" autocomplete="name" placeholder="Full name">
+        </div>
+        <div class="field">
+          <label for="inEmail">Email · user ID</label>
+          <input id="inEmail" type="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="name@company.com">
+        </div>
+        <div class="field">
+          <label for="inOrg">Organisation · vendor</label>
+          <input id="inOrg" type="text" autocomplete="organization" placeholder="e.g. Field Service, Display Manufacturer">
+          <span class="help">Logged as <code>vendor</code> on each record, so manufacturer, integrator and field-service scans can be told apart later.</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- HOME -->
+    <section class="screen" id="s-home">
+      <div class="pad">
+        <div class="who-row">
+          <div class="who-line top" id="whoLine"></div>
+          <button class="qr-mini" id="qrPlate" hidden aria-label="QR code linking to this app — tap to enlarge">
+            <canvas id="qrCanvas" width="232" height="232"></canvas>
+            <span class="qr-lab">Open on phone</span>
+          </button>
+        </div>
+        <p class="lede" id="homeLede" hidden>Scan the serial off a unit's label, photograph it in place, pin it with a GPS fix. Every capture becomes one event in that unit's custody history, stamped with your identity.</p>
+
+        <div class="site" id="siteCard"></div>
+
+        <div class="tiles" id="tiles"></div>
+
+        <div class="section-head inset"><div class="eyebrow">Recent captures</div><span class="n" id="recentN"></span></div>
+        <div class="recent" id="recent"></div>
+      </div>
+    </section>
+
+    <!-- LOOK UP -->
+    <section class="screen" id="s-lookup" hidden>
+      <div class="pad" style="padding-bottom:6px">
+        <div class="eyebrow">Find a unit</div>
+        <div class="field" style="margin-top:8px; margin-bottom:0">
+          <input id="lkQ" type="search" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="Serial, store ID or retailer">
+          <span class="help">Matches any unit captured on this phone. Scan the label instead to jump straight to its history.</span>
+        </div>
+      </div>
+      <div id="lkList"></div>
+    </section>
+
+    <!-- LOCATION -->
+    <section class="screen" id="s-location" hidden>
+      <div class="pad">
+        <div class="eyebrow">Location</div>
+        <h1 class="big" style="font-size:21px">Where captures get pinned</h1>
+        <p class="lede">Each capture takes its position from the phone's receiver. Warm it up before the first unit, or set a position by hand for sites where GPS cannot reach — the pin is offered on every capture and used automatically when the phone has no fix.</p>
+
+        <div class="section-head inset"><div class="eyebrow">Phone receiver</div><span class="n" id="locRxState"></span></div>
+        <div class="ledger" style="margin-top:0">
+          <div class="row"><span class="k">Accuracy</span><span class="v"><span class="acc" id="locRxAcc">—</span></span></div>
+          <div class="row"><span class="k">Last fix</span><span class="v" id="locRxWhen">—</span></div>
+          <div class="row"><span class="k">Coordinates</span><span class="v" id="locRxPos">—</span></div>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:12px">
+          <button class="btn slim" id="btnRx" style="flex:1">Start receiver</button>
+          <button class="btn ghost slim" id="btnRxUse" style="flex:1">Pin this fix</button>
+        </div>
+
+        <div class="section-head inset"><div class="eyebrow">Site pin</div><span class="n" id="locPinState"></span></div>
+        <div class="field" style="margin-top:14px">
+          <label for="locAddr">Find an address</label>
+          <div style="display:flex; gap:8px">
+            <input id="locAddr" type="search" autocapitalize="words" autocorrect="off" placeholder="1010 Smith Rd, Anytown" style="flex:1">
+            <button class="btn slim" id="btnGeocode" style="flex:none; padding:0 16px">Find</button>
+          </div>
+          <span class="help" id="locAddrHelp">Looked up through OpenStreetMap. Pick a result to drop the pin there.</span>
+        </div>
+        <div id="locResults"></div>
+        <div class="coords" style="margin-top:6px">
+          <div class="field">
+            <label for="locLat">Latitude</label>
+            <input id="locLat" type="text" inputmode="decimal" autocomplete="off" placeholder="42.36025300">
+          </div>
+          <div class="field">
+            <label for="locLon">Longitude</label>
+            <input id="locLon" type="text" inputmode="decimal" autocomplete="off" placeholder="-71.05829100">
+          </div>
+        </div>
+        <div class="mapbox" id="locMap" hidden><div class="map-hint">drag pin to adjust</div></div>
+        <div class="note quiet" id="locPinNote" hidden></div>
+        <div style="display:flex; gap:8px; margin-top:12px">
+          <button class="btn ghost slim" id="btnPinMaps" style="flex:1">Check in Maps</button>
+          <button class="btn danger slim" id="btnPinClear" style="flex:1">Clear pin</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCAN -->
+    <section class="screen" id="s-scan" hidden>
+      <div class="cam">
+        <video id="scanVid" playsinline muted autoplay></video>
+        <div class="scrim"></div>
+        <div class="reticle hunting" id="scanReticle"><i></i><i></i><i></i><i></i></div>
+        <div class="sweep"></div>
+        <div class="cam-tools"><button id="btnTorch" aria-pressed="false" aria-label="Torch" hidden>☀</button></div>
+        <div class="cam-note" id="scanNote">Fill the brackets with the label · hold steady</div>
+      </div>
+    </section>
+
+    <!-- SCANNED -->
+    <section class="screen" id="s-scanned" hidden>
+      <div class="pad">
+        <div class="eyebrow">Serial read</div>
+        <div class="serial" id="scCode">—</div>
+        <div class="ledger" id="scLedger"></div>
+        <div class="note" id="scNote">Check the serial against the label before you shoot. Mis-scans are cheap to fix here and expensive to fix in the fleet record.</div>
+      </div>
+    </section>
+
+    <!-- PHOTO CAPTURE -->
+    <section class="screen" id="s-photo" hidden>
+      <div class="cam">
+        <video id="photoVid" playsinline muted autoplay></video>
+        <div class="scrim"></div>
+        <div class="strip" id="strip"></div>
+        <div class="cam-note" id="photoNote">Mount, cabling, the room — shoot as many as the record needs</div>
+      </div>
+    </section>
+
+    <!-- PHOTO REVIEW -->
+    <section class="screen" id="s-photos" hidden>
+      <div class="pad">
+        <div class="eyebrow">Evidence set</div>
+        <h1 class="big" style="font-size:21px">Choose what goes in the record</h1>
+        <p class="lede">Tap to include or leave out. Left-out shots are discarded when you log.</p>
+        <div class="plates" id="plates"></div>
+      </div>
+    </section>
+
+    <!-- FIX / ADJUST -->
+    <section class="screen" id="s-fix" hidden>
+      <div class="pad">
+        <div class="eyebrow">Position</div>
+        <h1 class="big" style="font-size:21px" id="fixTitle">Acquiring fix</h1>
+        <p class="lede" id="fixLede">Waiting for the receiver. Drag the pin or edit the coordinates if the fix lands in the wrong place.</p>
+        <div class="mapbox" id="mapbox"><div class="map-hint" id="mapHint">drag pin to adjust</div></div>
+        <div class="note quiet" id="mapNote" hidden>Map tiles are not reachable from this host. Edit the coordinates directly, or open the pair in Maps to check it.</div>
+        <div class="coords">
+          <div class="field">
+            <label for="fxLat">Latitude</label>
+            <input id="fxLat" type="text" inputmode="decimal" autocomplete="off" placeholder="42.36025300">
+          </div>
+          <div class="field">
+            <label for="fxLon">Longitude</label>
+            <input id="fxLon" type="text" inputmode="decimal" autocomplete="off" placeholder="-71.05829100">
+          </div>
+        </div>
+        <div class="ledger">
+          <div class="row"><span class="k">Receiver</span><span class="v"><span class="acc" id="fxAcc">—</span></span></div>
+          <div class="row"><span class="k">Source</span><span class="v" id="fxSrc">—</span></div>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:14px;">
+          <button class="btn ghost slim" id="btnUsePhone" style="flex:1">Use phone fix</button>
+          <button class="btn ghost slim" id="btnUsePin" style="flex:1">Use site pin</button>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button class="btn ghost slim" id="btnFixAddr" style="flex:1">Set by address</button>
+          <button class="btn ghost slim" id="btnOpenMaps" style="flex:1">Check in Maps</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- CONFIRM -->
+    <section class="screen" id="s-confirm" hidden>
+      <div class="pad">
+        <div class="eyebrow">Review before logging</div>
+        <div class="serial" id="cfCode">—</div>
+        <div class="plates" id="cfPlates"></div>
+
+        <div class="field" style="margin-top:14px">
+          <label for="cfNotes">Notes for this capture</label>
+          <textarea id="cfNotes" placeholder="Condition, damage, what was changed, who was on site…"></textarea>
+          <span class="help">Saved with the record and sent as <code>notes</code>. More can be added later from the event, timestamped.</span>
+        </div>
+
+        <details class="opt" id="optDetails">
+          <summary><span class="eyebrow">Site and unit</span><span class="n" id="optCount"></span></summary>
+          <div class="two" style="margin-top:6px">
+            <div class="field">
+              <label for="cfStore">Store ID</label>
+              <input id="cfStore" type="text" autocapitalize="characters" placeholder="e.g. BBY-0214">
+            </div>
+            <div class="field">
+              <label for="cfRetailer">Retailer</label>
+              <input id="cfRetailer" type="text" placeholder="e.g. Best Buy">
+            </div>
+          </div>
+          <div class="field" style="margin-top:16px">
+            <label for="cfDisplay">Display type</label>
+            <input id="cfDisplay" type="text" placeholder="e.g. Sustain+ 240cm">
+          </div>
+        </details>
+
+        <div class="ledger" id="cfLedger"></div>
+      </div>
+    </section>
+
+    <!-- SENDING -->
+    <section class="screen" id="s-sending" hidden>
+      <div class="centre">
+        <div class="ring"></div>
+        <h2 id="sendTitle">Logging</h2>
+        <p id="sendStep">Saving to this device…</p>
+      </div>
+    </section>
+
+    <!-- DONE -->
+    <section class="screen" id="s-done" hidden>
+      <div class="centre">
+        <div class="stamp ok" id="doneStamp">✓</div>
+        <h2 id="doneTitle">Logged</h2>
+        <p id="doneBody">Saved on this device.</p>
+        <div class="echo ledger" id="doneEcho" hidden></div>
+      </div>
+    </section>
+
+    <!-- RECORDS -->
+    <section class="screen" id="s-records" hidden>
+      <div class="tabs" role="tablist">
+        <button role="tab" data-tab="events" aria-selected="true">Events</button>
+        <button role="tab" data-tab="units" aria-selected="false">Units</button>
+        <button role="tab" data-tab="map" aria-selected="false">Map</button>
+        <span class="n" id="recCount"></span>
+      </div>
+      <div id="recBody"></div>
+    </section>
+
+    <!-- UNIT HISTORY -->
+    <section class="screen" id="s-unit" hidden>
+      <div class="pad" style="padding-bottom:0">
+        <div class="eyebrow">Unit history</div>
+        <div class="serial" id="unitCode">—</div>
+        <div class="ledger" id="unitLedger"></div>
+      </div>
+      <div class="tl" id="unitTl"></div>
+    </section>
+
+    <!-- DETAIL -->
+    <section class="screen" id="s-detail" hidden>
+      <div class="pad" id="detailBody"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="screen" id="s-settings" hidden>
+      <div class="pad">
+        <div class="eyebrow">Settings</div>
+        <h1 class="big" style="font-size:21px">Upstream and validation</h1>
+        <p class="lede">Leave the endpoint blank and the app stays entirely local. Fill it in and each capture also posts the JSON envelope the 2016 build sent, extended with identity, photos and optional fields.</p>
+
+        <div class="note">
+          <b>No credentials live in this page.</b> Sign the upload URL server-side and paste a short-lived one here — never an access key and secret.
+        </div>
+
+        <div class="field">
+          <label for="setApi">Data endpoint (POST)</label>
+          <input id="setApi" type="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://…/prod/DispGeoLoc">
+          <span class="help">Receives <code>{envelope, payload, httpdata}</code>. A JSON reply carrying <code>storeId</code>, <code>assetId</code> or <code>message</code> is echoed back to the operator for acknowledgement.</span>
+        </div>
+        <div class="field">
+          <label for="setKey">API key header</label>
+          <input id="setKey" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="sent as x-api-key">
+        </div>
+        <div class="field">
+          <label for="setUpload">Photo upload URL (PUT)</label>
+          <input id="setUpload" type="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://…?X-Amz-Signature=…">
+          <span class="help">Presigned PUT. <code>{code}</code>, <code>{ts}</code> and <code>{n}</code> (photo index) are substituted. The URL minus its query string is logged in <code>imageLocs</code>.</span>
+        </div>
+
+        <div class="section-head inset"><div class="eyebrow">Serial validation</div></div>
+        <div class="field" style="margin-top:14px">
+          <label for="setPattern">Expected serial pattern</label>
+          <input id="setPattern" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="regular expression, e.g. ^[A-Z0-9]{12}$">
+          <span class="help">Scans that do not match are flagged, not blocked — the label is the truth, the pattern is a tripwire.</span>
+        </div>
+
+        <div class="section-head inset"><div class="eyebrow">Identity</div></div>
+        <div class="who-line" id="setWho"></div>
+        <div style="display:flex; flex-direction:column; gap:8px; margin-top:12px">
+          <button class="btn ghost slim" id="btnSignout">Sign out of this phone</button>
+        </div>
+
+        <div class="section-head inset"><div class="eyebrow">Data</div></div>
+        <div style="display:flex; flex-direction:column; gap:8px; margin-top:14px">
+          <button class="btn slim" id="btnExportCsv">Export all events · CSV</button>
+          <button class="btn slim" id="btnExportUnits">Export latest per unit · CSV</button>
+          <button class="btn slim" id="btnExportJson">Export envelopes · JSON</button>
+          <button class="btn danger slim" id="btnWipe">Delete all records</button>
+        </div>
+
+        <div class="note quiet"><b>Diagnostics.</b> <span id="diag"></span></div>
+      </div>
+    </section>
+
+  </main>
+
+  <div id="dock"></div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="lightbox" id="lightbox" hidden>
+  <div class="lb-stack"><img id="lbImg" alt="Capture photo"><div class="lb-cap" id="lbCap" hidden></div></div>
+  <button id="lbClose" aria-label="Close">✕</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script>
+"use strict";
+
+/* ══════════════════════════════════════════════════════════════════════════
+   GeoBarcode Field Capture — web rebuild of the 2016 Cordova prototype,
+   brought up to the 2017 design overview and 2020 Outform/Snowflake flow:
+
+     sign in → scan → photos (n) → fix (adjustable) → confirm (+optional
+     entry) → save locally → optional upload/post → server echo → done
+
+   Records are events in a per-serial custody history. The JSON envelope
+   keeps every 2016 key and adds identity, photos and optional fields.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* ── helpers ─────────────────────────────────────────────────────────── */
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
+const pad2 = (n) => String(n).padStart(2, "0");
+const pad3 = (n) => String(n).padStart(3, "0");
+const f8 = (n) => (n == null || isNaN(n) ? "—" : Number(n).toFixed(8));
+
+let toastTimer;
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 2600);
+}
+/* ── Capacitor bridge ──────────────────────────────────────────────────────
+   When this page runs inside the Capacitor shell, window.Capacitor is
+   injected by the native runtime. Everything here is optional: on the web
+   `native` is null and the standard browser APIs carry on.               */
+const native = (() => {
+  const C = window.Capacitor;
+  if (!C || typeof C.isNativePlatform !== "function" || !C.isNativePlatform()) return null;
+  const reg = (n) => { try { return C.registerPlugin ? C.registerPlugin(n) : (C.Plugins && C.Plugins[n]) || null; } catch (e) { return null; } };
+  return {
+    platform: C.getPlatform ? C.getPlatform() : "native",
+    Geolocation: reg("Geolocation"), Share: reg("Share"), Filesystem: reg("Filesystem"),
+    Haptics: reg("Haptics"), StatusBar: reg("StatusBar"), App: reg("App")
+  };
+})();
+
+function buzz(ms) {
+  if (native && native.Haptics) { native.Haptics.impact({ style: ms >= 30 ? "Medium" : "Light" }).catch(() => {}); return; }
+  try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {}
+}
+
+function tzOffset(d) {
+  const m = -d.getTimezoneOffset(), s = m < 0 ? "-" : "+", a = Math.abs(m);
+  return s + pad2(Math.floor(a / 60)) + pad2(a % 60);
+}
+function tzAbbrev(d) {
+  const m = String(d).match(/\(([^)]+)\)$/);
+  if (!m) return tzOffset(d);
+  return /\s/.test(m[1]) ? m[1].split(/\s/).map((w) => w[0]).join("") : m[1];
+}
+const localStamp = (d) =>
+  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T` +
+  `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${pad3(d.getMilliseconds())}${tzOffset(d)}`;
+const utcStamp = (d) => d.toISOString();
+const humanStamp = (d) => d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const humanDate = (d) => d.toLocaleString([], { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const folderStamp = (d) => `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}-${d.getFullYear()}-${pad2(d.getHours())}-${pad2(d.getMinutes())}`;
+const initials = (name) => (name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?";
+
+/* ── settings, identity, sticky site context (localStorage) ──────────── */
+const SKEY = "geobarcode.settings.v2", IKEY = "geobarcode.identity.v1", CKEY = "geobarcode.context.v1";
+let settings = { api: "", key: "", upload: "", pattern: "" };
+let identity = null;                       /* {name, email, org} */
+let context  = { storeId: "", retailer: "" };   /* remembered between units at one site */
+try { Object.assign(settings, JSON.parse(localStorage.getItem(SKEY) || "{}")); } catch (e) {}
+try { identity = JSON.parse(localStorage.getItem(IKEY) || "null"); } catch (e) {}
+try { Object.assign(context, JSON.parse(localStorage.getItem(CKEY) || "{}")); } catch (e) {}
+const persist = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+
+/* ── record store (IndexedDB) ────────────────────────────────────────── */
+const DB_NAME = "geobarcode", STORE = "records";
+let dbp;
+function db() {
+  if (dbp) return dbp;
+  dbp = new Promise((res, rej) => {
+    const rq = indexedDB.open(DB_NAME, 1);
+    rq.onupgradeneeded = () => {
+      const s = rq.result.createObjectStore(STORE, { keyPath: "id" });
+      s.createIndex("capturedAt", "capturedAt");
+    };
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+  });
+  return dbp;
+}
+async function tx(mode, fn) {
+  const d = await db();
+  return new Promise((res, rej) => {
+    const t = d.transaction(STORE, mode);
+    const rq = fn(t.objectStore(STORE));
+    t.oncomplete = () => res(rq && rq.result !== undefined ? rq.result : undefined);
+    t.onerror = () => rej(t.error);
+  });
+}
+const putRecord = (r)  => tx("readwrite", (s) => s.put(r));
+const delRecord = (id) => tx("readwrite", (s) => s.delete(id));
+const wipeStore = ()   => tx("readwrite", (s) => s.clear());
+async function allRecords() {
+  const rows = await tx("readonly", (s) => s.getAll());
+  return (rows || []).sort((a, b) => b.capturedAt - a.capturedAt);
+}
+/* photos: v2 stores an array; v1 stored a single blob */
+const photosOf = (r) => (r.photos && r.photos.length ? r.photos : r.photo ? [r.photo] : []);
+
+/* ── camera ──────────────────────────────────────────────────────────── */
+const cam = {
+  stream: null, track: null, torchOn: false,
+  async open(video) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("This browser exposes no camera API.");
+    if (!this.stream) {
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1440 } }
+      });
+      this.track = this.stream.getVideoTracks()[0];
+    }
+    video.srcObject = this.stream;
+    try { await video.play(); } catch (e) {}
+  },
+  close() {
+    if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
+    this.stream = null; this.track = null; this.torchOn = false;
+  },
+  torchCapable() { try { return !!(this.track && this.track.getCapabilities && this.track.getCapabilities().torch); } catch (e) { return false; } },
+  async torch(on) { try { await this.track.applyConstraints({ advanced: [{ torch: !!on }] }); this.torchOn = !!on; return true; } catch (e) { return false; } }
+};
+
+/* ── decoder: probes the ZXing bundle at runtime, keeps what answers ─── */
+const decoder = {
+  ready: false, chain: [], native: null, core: null, browser: null, hints: null, formatNames: {},
+  async init() {
+    if (this.ready) return this.available();
+    const wanted = ["qr_code","data_matrix","code_128","code_39","code_93","ean_13","ean_8","upc_a","upc_e","itf","codabar","pdf417","aztec"];
+    if ("BarcodeDetector" in window) {
+      try {
+        const sup = await window.BarcodeDetector.getSupportedFormats();
+        const use = wanted.filter((f) => sup.includes(f));
+        if (use.length >= 3) this.native = new window.BarcodeDetector({ formats: use });
+      } catch (e) { this.native = null; }
+    }
+    const Z = typeof ZXing !== "undefined" ? ZXing : null;
+    if (Z) {
+      try {
+        const F = Z.BarcodeFormat, H = Z.DecodeHintType;
+        for (const k in F) if (typeof F[k] === "number") this.formatNames[F[k]] = k;
+        const formats = ["QR_CODE","DATA_MATRIX","AZTEC","PDF_417","CODE_128","CODE_39","CODE_93","EAN_13","EAN_8","UPC_A","UPC_E","ITF","CODABAR"]
+          .map((n) => F[n]).filter((v) => v !== undefined);
+        this.hints = new Map();
+        this.hints.set(H.POSSIBLE_FORMATS, formats);
+        this.hints.set(H.TRY_HARDER, true);
+        this.core = new Z.MultiFormatReader();
+        if (this.core.setHints) this.core.setHints(this.hints);
+      } catch (e) { this.core = null; }
+      try { this.browser = new Z.BrowserMultiFormatReader(this.hints || undefined); } catch (e) { this.browser = null; }
+    }
+    this.chain = [];
+    if (this.native) this.chain.push("native");
+    if (this.browser && typeof this.browser.decodeFromCanvas === "function") this.chain.push("browserCanvas");
+    if (this.core && Z && Z.HTMLCanvasElementLuminanceSource) this.chain.push("canvasSource");
+    if (this.core && Z && Z.RGBLuminanceSource) this.chain.push("rgbSource");
+    this.ready = true;
+    return this.available();
+  },
+  available() { return this.chain.length > 0; },
+  get strategy() { return this.chain[0] || null; },
+  isEmptyFrame(e) {
+    if (!e) return false;
+    const Z = typeof ZXing !== "undefined" ? ZXing : null;
+    if (Z && Z.Exception && e instanceof Z.Exception) return true;
+    const n = e.name || (e.constructor && e.constructor.kind) || "";
+    if (/NotFound|Checksum|Format/i.test(n)) return true;
+    return /no multiformat readers|not found/i.test(e.message || "");
+  },
+  fmt(r) {
+    if (r == null) return "UNKNOWN";
+    if (typeof r === "string") return r.toUpperCase().replace(/[-\s]/g, "_");
+    return this.formatNames[r] || String(r);
+  },
+  async read(canvas) {
+    for (const s of this.chain.slice()) {
+      try { return (await this["_" + s](canvas)) || null; }
+      catch (e) {
+        if (this.isEmptyFrame(e)) return null;
+        this.chain = this.chain.filter((x) => x !== s);
+      }
+    }
+    return null;
+  },
+  async _native(canvas) {
+    const found = await this.native.detect(canvas);
+    return found && found.length ? { text: found[0].rawValue, format: this.fmt(found[0].format) } : null;
+  },
+  async _browserCanvas(canvas) {
+    const r = this.browser.decodeFromCanvas(canvas);
+    return r ? { text: r.getText(), format: this.fmt(r.getBarcodeFormat()) } : null;
+  },
+  async _canvasSource(canvas) {
+    const src = new ZXing.HTMLCanvasElementLuminanceSource(canvas);
+    const r = this.core.decode(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(src)), this.hints);
+    return r ? { text: r.getText(), format: this.fmt(r.getBarcodeFormat()) } : null;
+  },
+  async _rgbSource(canvas) {
+    const w = canvas.width, h = canvas.height;
+    const px = canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+    const lum = new Uint8ClampedArray(w * h);
+    for (let i = 0, j = 0; i < lum.length; i++, j += 4) lum[i] = (px[j] * 306 + px[j + 1] * 601 + px[j + 2] * 117) >> 10;
+    const bmp = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.RGBLuminanceSource(lum, w, h)));
+    const r = this.core.decode(bmp, this.hints);
+    return r ? { text: r.getText(), format: this.fmt(r.getBarcodeFormat()) } : null;
+  },
+  reset() { try { this.core && this.core.reset && this.core.reset(); } catch (e) {} }
+};
+
+const FORMAT_LABEL = {
+  QR_CODE: "QR Code", DATA_MATRIX: "Data Matrix", AZTEC: "Aztec", PDF_417: "PDF417",
+  CODE_128: "Code 128", CODE_39: "Code 39", CODE_93: "Code 93", ITF: "ITF (Interleaved 2 of 5)",
+  CODABAR: "Codabar", EAN_13: "EAN-13", EAN_8: "EAN-8", UPC_A: "UPC-A", UPC_E: "UPC-E",
+  MANUAL: "Keyed in by hand", UNKNOWN: "Unrecognised symbology"
+};
+const fmtLabel = (f) => FORMAT_LABEL[f] || String(f || "—").replace(/_/g, " ");
+
+/* Production-line QR codes may carry a structured payload (serial, display
+   type, store). Plain text is treated as the serial itself. */
+function parsePayload(text) {
+  const t = String(text).trim();
+  if (t[0] === "{") {
+    try {
+      const o = JSON.parse(t);
+      const pick = (...ks) => { for (const k of ks) if (o[k] != null && o[k] !== "") return String(o[k]); return ""; };
+      const serial = pick("serial", "serialNumber", "sn", "deviceId", "device_id", "id");
+      if (serial) return { code: serial, displayType: pick("displayType", "display_type", "display", "model"),
+                           storeId: pick("storeId", "store_id", "store"), retailer: pick("retailer", "customer"), structured: true };
+    } catch (e) {}
+  }
+  return { code: t, displayType: "", storeId: "", retailer: "", structured: false };
+}
+function patternCheck(code) {
+  if (!settings.pattern) return null;
+  try { return new RegExp(settings.pattern).test(code); } catch (e) { return null; }
+}
+
+/* ── geolocation: primed early, watched continuously, best fix kept ──── */
+const geo = {
+  watchId: null, best: null, bestAt: 0, onUpdate: null, onFail: null,
+  keep: false,                 /* true when the operator warmed it up by hand */
+  start(onUpdate, onFail) {
+    this.onUpdate = onUpdate || null; this.onFail = onFail || null;
+    if (this.watchId != null) { if (this.best && this.onUpdate) this.onUpdate(this.best); return; }
+    const usePlugin = !!(native && native.Geolocation);
+    if (!usePlugin && !navigator.geolocation) { setGpsChip("fail", "No GPS"); onFail && onFail({ code: 0, message: "This browser exposes no geolocation API." }); return; }
+    setGpsChip("wait", "Locating…");
+    const onPos = (p) => {
+      const stale = this.best && Date.now() - this.bestAt > 60000;
+      if (!this.best || stale || p.coords.accuracy <= this.best.coords.accuracy) { this.best = p; this.bestAt = Date.now(); }
+      const a = Math.round(this.best.coords.accuracy);
+      setGpsChip(accQuality(a) === "poor" ? "wait" : "live", `±${a} m`);
+      this.onUpdate && this.onUpdate(this.best);
+    };
+    const onErr = (e) => {
+      const denied = e && (e.code === 1 || /denied|permission/i.test(e.message || ""));
+      this.stop(); setGpsChip("fail", denied ? "GPS denied" : "GPS off");
+      this.onFail && this.onFail(denied ? { code: 1, message: e.message || "denied" } : (e || { code: 2, message: "unavailable" }));
+    };
+    const opts = { enableHighAccuracy: true, timeout: 25000, maximumAge: 0 };
+    if (usePlugin) {
+      /* Capacitor Geolocation: same position shape, promise-returning watch */
+      this.watchId = "pending";
+      native.Geolocation.watchPosition(opts, (p, err) => { if (err) onErr(err); else if (p) onPos(p); })
+        .then((id) => { if (this.watchId === "pending") this.watchId = id; else native.Geolocation.clearWatch({ id }); })
+        .catch(onErr);
+    } else {
+      this.watchId = navigator.geolocation.watchPosition(onPos, onErr, opts);
+    }
+  },
+  stop() {
+    if (this.watchId != null && this.watchId !== "pending") {
+      if (native && native.Geolocation) native.Geolocation.clearWatch({ id: this.watchId }).catch(() => {});
+      else navigator.geolocation.clearWatch(this.watchId);
+    }
+    this.watchId = null; this.onUpdate = null; this.onFail = null; this.keep = false;
+    setGpsChip("idle", "Location");
+  }
+};
+const accQuality = (m) => (m == null ? "poor" : m <= 15 ? "good" : m <= 50 ? "fair" : "poor");
+/* The chip is the front door to the Location screen; its text is the one
+   line of state worth carrying on every screen. An idle receiver with a
+   site pin set shows the pin, since that is what the next capture uses. */
+function setGpsChip(state, text) {
+  if (state === "idle" && context.pin) { state = "pinned"; text = "Pinned"; }
+  $("gpsChip").dataset.s = state; $("gpsTxt").textContent = text;
+}
+
+/* ── geocoding (OpenStreetMap Nominatim): best-effort, never load-bearing ── */
+const NOMINATIM = "https://nominatim.openstreetmap.org";
+async function fetchJson(url, ms) {
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms || 8000);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, headers: { Accept: "application/json" } });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return await res.json();
+  } finally { clearTimeout(t); }
+}
+async function geocode(q) {
+  return fetchJson(`${NOMINATIM}/search?format=jsonv2&addressdetails=1&limit=6&q=${encodeURIComponent(q)}`, 9000);
+}
+async function reverseGeocode(lat, lon) {
+  return fetchJson(`${NOMINATIM}/reverse?format=jsonv2&addressdetails=1&lat=${lat}&lon=${lon}`, 4500);
+}
+/* Nominatim's address object → the 2016 envelope's address fields */
+function addrFields(a) {
+  if (!a) return null;
+  return {
+    address: [a.house_number, a.road].filter(Boolean).join(" "),
+    city: a.city || a.town || a.village || a.hamlet || a.municipality || "",
+    subdivision1: a.state || "", subdivision2: a.county || "",
+    postalCode: a.postcode || "", country: a.country || "",
+    countryiso2: (a.country_code || "").toUpperCase(), countryiso3: ""
+  };
+}
+const addrLine = (f) => f ? [f.address, f.city, f.subdivision1, f.postalCode].filter(Boolean).join(", ") : "";
+
+/* ── maps: Leaflet + OSM tiles, degrading to fields-only when blocked ── */
+const maps = {
+  blocked: false,
+  ok() { return typeof L !== "undefined" && !this.blocked; },
+  make(container, center, zoom) {
+    const m = L.map(container, { zoomControl: false, attributionControl: true, zoomSnap: 0.5 }).setView(center, zoom);
+    m.attributionControl.setPrefix("");
+    const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(m);
+    let errs = 0, loads = 0;
+    tiles.on("tileerror", () => { errs++; });
+    tiles.on("tileload", () => { loads++; });
+    m._probe = setTimeout(() => { if (!loads && errs) { this.blocked = true; m.fire("blocked"); } }, 4000);
+    return m;
+  },
+  kill(m) { if (!m) return; clearTimeout(m._probe); try { m.remove(); } catch (e) {} }
+};
+const pinIcon = (small) => L.divIcon({ className: "pin" + (small ? " small" : ""), html: "<i></i>", iconSize: small ? [14, 14] : [22, 22], iconAnchor: small ? [7, 7] : [11, 11] });
+
+/* ── app state ───────────────────────────────────────────────────────── */
+const app = {
+  screen: "home",
+  scanMode: "capture",                         /* capture | lookup */
+  code: null, format: null, readAt: null, payload: null,
+  photos: [],                                  /* [{blob, url, selected}] */
+  loc: null,                                   /* {lat, lon, acc, source: gps|adjusted|manual} */
+  locTouched: false,
+  capturedAt: null,
+  scanning: false, rafId: null, lastFrame: 0,
+  current: null, currentUnit: null, recTab: "events",
+  fixMap: null, fixMarker: null, fixCircle: null, logMap: null,
+  locMap: null, locMarker: null, locReturn: null, locAddr: null
+};
+
+const SCREENS = ["signin","home","lookup","location","scan","scanned","photo","photos","fix","confirm","sending","done","records","unit","detail","settings"];
+/* where a position came from — carried on the record, shown everywhere */
+const SRC_LABEL = { gps: "phone GPS", adjusted: "pin dragged by operator", manual: "typed by operator", address: "address lookup", site: "site pin" };
+const srcLabel = (s) => SRC_LABEL[s] || (s || "—");
+const RAIL_FOR = { scan: "scan", scanned: "scan", photo: "photo", photos: "photo", fix: "fix", confirm: "send", sending: "send", done: "send" };
+const RAIL_ORDER = ["scan", "photo", "fix", "send"];
+const CAM_SCREENS = new Set(["scan", "photo"]);
+/* the receiver keeps running across the whole capture flow so the fix is
+   warm by step 3 — and stops the moment the operator leaves the flow */
+const KEEP_GEO = new Set(["scan","scanned","photo","photos","fix","confirm","sending","done"]);
+
+function setRail(name) {
+  const rail = $("rail"), active = name === "scan" && app.scanMode === "lookup" ? null : RAIL_FOR[name];
+  rail.hidden = !active;
+  if (!active) return;
+  const i = RAIL_ORDER.indexOf(active);
+  rail.querySelectorAll(".step").forEach((s, n) => { s.dataset.s = n < i ? "done" : n === i ? "now" : "next"; });
+}
+
+function dock(spec) {
+  const d = $("dock");
+  d.textContent = "";
+  if (!spec) return;
+  if (spec.hint) d.appendChild(el("div", "hint", spec.hint));
+  (spec.rows || []).forEach((row) => {
+    const r = el("div", "row");
+    row.forEach((b) => {
+      if (b.shutter) {
+        const w = el("div", "shutter-wrap"), s = el("button", "shutter");
+        s.setAttribute("aria-label", b.label || "Capture");
+        s.addEventListener("click", b.on);
+        w.appendChild(s); r.appendChild(w); return;
+      }
+      const btn = el("button", "btn " + (b.kind || ""), b.label);
+      if (b.id) btn.id = b.id;
+      if (b.disabled) btn.disabled = true;
+      btn.addEventListener("click", b.on);
+      r.appendChild(btn);
+    });
+    d.appendChild(r);
+  });
+}
+
+async function go(name) {
+  const from = app.screen;
+  if (CAM_SCREENS.has(from) && !CAM_SCREENS.has(name)) { stopScanLoop(); cam.close(); }
+  if (from === "fix") { maps.kill(app.fixMap); app.fixMap = app.fixMarker = app.fixCircle = null; geo.onUpdate = null; }
+  if (from === "records") { maps.kill(app.logMap); app.logMap = null; }
+  if (from === "location") { maps.kill(app.locMap); app.locMap = app.locMarker = null; if (geo.onUpdate === renderRx) geo.onUpdate = null; }
+  if (!KEEP_GEO.has(name) && !geo.keep) geo.stop();   /* a receiver the operator warmed up stays on */
+
+  app.screen = name;
+  SCREENS.forEach((s) => { $("s-" + s).hidden = s !== name; });
+  setRail(name);
+  $("s-" + name).scrollTop = 0;
+  const enter = ENTER[name];
+  if (enter) await enter();
+}
+
+function resetWorkflow() {
+  app.scanMode = "capture";
+  app.code = app.format = app.readAt = app.payload = app.capturedAt = null;
+  app.photos.forEach((p) => URL.revokeObjectURL(p.url));
+  app.photos = [];
+  app.loc = null; app.locTouched = false; app.locAddr = null;
+  ["cfStore","cfRetailer","cfDisplay","cfNotes"].forEach((id) => { delete $(id).dataset.touched; $(id).value = ""; });
+  $("optDetails").open = false;
+  decoder.reset();
+}
+
+/* ══ SIGN IN ═════════════════════════════════════════════════════════════ */
+async function enterSignin() {
+  $("inName").value = identity ? identity.name : "";
+  $("inEmail").value = identity ? identity.email : "";
+  $("inOrg").value = identity ? identity.org : "";
+  $("inEmail").oninput = () => $("inEmail").removeAttribute("aria-invalid");
+  dock({
+    hint: "Kept on this phone. Nothing is sent anywhere.",
+    rows: [[{ label: "Sign in", kind: "primary", on: () => {
+      const name = $("inName").value.trim(), email = $("inEmail").value.trim(), org = $("inOrg").value.trim();
+      if (!name || !email) { toast("Name and email are the minimum for a custody record."); return; }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { $("inEmail").setAttribute("aria-invalid", "true"); toast("That email does not look right."); return; }
+      identity = { name, email, org };
+      persist(IKEY, identity);
+      go("home");
+    } }]]
+  });
+}
+
+function renderWho(container) {
+  container.textContent = "";
+  if (!identity) { container.appendChild(el("span", null, "Not signed in")); return; }
+  const av = el("div", "av", initials(identity.name));
+  const t = el("div", "t");
+  t.appendChild(el("b", null, identity.name));
+  t.appendChild(el("span", null, identity.email + (identity.org ? " · " + identity.org : "")));
+  container.append(av, t);
+}
+
+/* ══ HOME ════════════════════════════════════════════════════════════════
+   The 2017 wireframes open on "select app from device desktop" — a grid of
+   shortcuts. This is that grid, plus the two things a tech needs before
+   the first scan of a visit: who they are, and which site they are at.  */
+
+const ICON = {
+  search:   '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4.2-4.2"/>',
+  units:    '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  events:   '<path d="M4 6h16M4 12h16M4 18h10"/>',
+  map:      '<path d="M12 21s-6-5.3-6-11a6 6 0 0 1 12 0c0 5.7-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/>',
+  send:     '<path d="M12 17V4M6 10l6-6 6 6"/><path d="M4 20h16"/>',
+  export:   '<path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 13v6h14v-6"/>',
+  settings: '<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>'
+};
+function tile(spec) {
+  const b = el("button", "tile" + (spec.hot ? " hot" : "") + (spec.quiet ? " quiet" : ""));
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = ICON[spec.icon];
+  const txt = el("div");
+  txt.appendChild(el("div", "t", spec.title));
+  txt.appendChild(el("div", "s", spec.sub));
+  b.append(svg, txt);
+  if (spec.disabled) b.disabled = true;
+  b.addEventListener("click", spec.on);
+  return b;
+}
+
+function renderSite(editing) {
+  const c = $("siteCard");
+  c.textContent = "";
+  c.dataset.editing = String(!!editing);
+  const has = context.storeId || context.retailer;
+
+  const head = el("div", "head");
+  const t = el("div", "t");
+  t.appendChild(el("div", "eyebrow", "Working at"));
+  t.appendChild(el("div", "val" + (has ? "" : " none"), has ? [context.retailer, context.storeId].filter(Boolean).join(" · ") : "No site set · GPS only"));
+  const btn = el("button", "btn ghost", editing ? "Cancel" : has ? "Change" : "Set site");
+  btn.addEventListener("click", () => renderSite(!editing));
+  head.append(t, btn);
+  c.appendChild(head);
+
+  const ed = el("div", "edit");
+  const two = el("div", "two");
+  const f1 = el("div", "field"), f2 = el("div", "field");
+  const l1 = el("label", null, "Retailer"); l1.htmlFor = "siteRetailer";
+  const i1 = el("input"); i1.id = "siteRetailer"; i1.type = "text"; i1.placeholder = "e.g. Best Buy"; i1.value = context.retailer || "";
+  const l2 = el("label", null, "Store ID"); l2.htmlFor = "siteStore";
+  const i2 = el("input"); i2.id = "siteStore"; i2.type = "text"; i2.placeholder = "e.g. BBY-0214"; i2.autocapitalize = "characters"; i2.value = context.storeId || "";
+  f1.append(l1, i1); f2.append(l2, i2); two.append(f1, f2);
+  const row = el("div", "row");
+  const save = el("button", "btn primary slim", "Save site");
+  save.addEventListener("click", () => {
+    context = { retailer: i1.value.trim(), storeId: i2.value.trim() };
+    persist(CKEY, context);
+    toast(context.retailer || context.storeId ? "Site set — new captures inherit it." : "Site cleared.");
+    renderSite(false);
+  });
+  const clear = el("button", "btn ghost slim", "Clear");
+  clear.addEventListener("click", () => { i1.value = ""; i2.value = ""; });
+  row.append(clear, save);
+  ed.append(two, row);
+  c.appendChild(ed);
+  if (editing) setTimeout(() => (has ? i2 : i1).focus(), 30);
+}
+
+/* QR handoff: the app's own address, so a phone camera can open it here.
+   Meaningless inside the native shell or from a file:// path, so it hides. */
+const ARTIFACT_URL = "https://claude.ai/code/artifact/c0588c63-d66c-4bc7-9388-ccab2b96e87a";
+function inHostedPreview() {
+  if (window.top === window.self) return false;
+  const anc = (location.ancestorOrigins && location.ancestorOrigins[0]) || document.referrer || "";
+  return /claude\.ai/.test(anc) || /claude/.test(location.hostname);
+}
+function appUrl() {
+  if (inHostedPreview()) return ARTIFACT_URL;     /* the frame's own address is not the shareable one */
+  const u = new URL(location.href);
+  u.hash = "";
+  return u.toString();
+}
+function qrPlaceholder(title, body) {
+  const plate = $("qrPlate"), cv = $("qrCanvas"), ctx = cv.getContext("2d");
+  plate.hidden = false; plate.classList.add("off");
+  ctx.clearRect(0, 0, 232, 232);
+  ctx.fillStyle = "#141B23"; ctx.fillRect(0, 0, 232, 232);
+  ctx.strokeStyle = "#2A3745"; ctx.lineWidth = 6; ctx.setLineDash([14, 10]); ctx.strokeRect(12, 12, 208, 208);
+  ctx.setLineDash([]); ctx.fillStyle = "#63737F"; ctx.font = "600 34px ui-monospace, monospace"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("?", 116, 116);
+  plate.querySelector(".qr-lab").textContent = "No link yet";
+  plate.onclick = () => {
+    const cap = el("div");
+    cap.appendChild(el("b", null, title));
+    cap.appendChild(document.createTextNode(" " + body));
+    lightbox(cv.toDataURL("image/png"), cap);
+  };
+}
+
+function renderQr() {
+  const plate = $("qrPlate");
+  const proto = location.protocol;
+  plate.classList.remove("off");
+  plate.querySelector(".qr-lab").textContent = "Open on phone";
+  if (native || proto === "capacitor:") { plate.hidden = true; return; }
+  if (proto === "file:") {
+    qrPlaceholder("You are viewing this file straight from disk.",
+      "A phone cannot open a file:// path on your Mac, so there is no link to encode. Host GeoBarcode-web.html on any HTTPS address — Netlify Drop, GitHub Pages, an S3 bucket — open it from there, and the code appears here automatically pointing at that address.");
+    return;
+  }
+  const url = appUrl();
+
+  const cv = $("qrCanvas"), ctx = cv.getContext("2d");
+  let ok = false;
+  if (typeof qrcode === "function") {
+    try {
+      const q = qrcode(0, "M");            /* type 0 = auto-size for the payload */
+      q.addData(url); q.make();
+      const n = q.getModuleCount(), quiet = 2, size = 232;
+      const cell = Math.floor(size / (n + quiet * 2)), off = Math.floor((size - cell * n) / 2);
+      ctx.fillStyle = "#FFFFFF"; ctx.fillRect(0, 0, size, size);
+      ctx.fillStyle = "#0B0F14";
+      for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (q.isDark(r, c)) ctx.fillRect(off + c * cell, off + r * cell, cell, cell);
+      ok = true;
+    } catch (e) { ok = false; }
+  }
+  if (!ok) {
+    qrPlaceholder("The QR encoder did not load.",
+      "The code is drawn by a small library fetched from a CDN, which this network blocked. The link itself still works: " + url);
+    return;
+  }
+  plate.hidden = false;
+
+  /* tap → large code with the address, copy/share, and any caveat about where it points */
+  plate.onclick = () => {
+    const cap = el("div");
+    cap.appendChild(document.createTextNode("Point the iPhone camera at the code and tap the banner. Then Add to Home Screen from Safari's share sheet."));
+    cap.appendChild(el("code", null, url));
+    const row = el("div", "row");
+    const copy = el("button", "btn ghost slim", "Copy link"); copy.addEventListener("click", () => copyText(url));
+    const share = el("button", "btn ghost slim", "Share link");
+    share.addEventListener("click", async () => {
+      if (navigator.share) { try { await navigator.share({ title: "GeoBarcode", url }); return; } catch (e) { if (e && e.name === "AbortError") return; } }
+      copyText(url);
+    });
+    row.append(copy, share); cap.appendChild(row);
+    let warn = "";
+    if (location.hostname === "localhost" || /^(127\.|192\.168\.|10\.)/.test(location.hostname))
+      warn = "This address is local to this machine. The phone must be on the same network, and the camera and GPS will only work over HTTPS.";
+    else if (inHostedPreview())
+      warn = "This is the hosted preview — the phone must be signed in to the same Claude account. Host GeoBarcode-web.html on your own HTTPS origin and this code will point there instead.";
+    if (warn) cap.appendChild(el("div", "note quiet", warn));
+    lightbox(cv.toDataURL("image/png"), cap);
+  };
+}
+
+async function enterHome() {
+  if (!identity) { go("signin"); return; }
+  resetWorkflow();
+  app.scanMode = "capture";
+  renderWho($("whoLine"));
+  renderQr();
+  const rows = await allRecords();
+  const units = new Set(rows.map((r) => r.code)).size;
+  const pinned = new Set(rows.filter((r) => r.lat != null).map((r) => r.code)).size;
+  const unsent = rows.filter((r) => r.status !== "sent" || r.dirty).length;
+
+  $("homeLede").hidden = rows.length > 0;
+  renderSite(false);
+
+  const T = $("tiles");
+  T.textContent = "";
+  T.appendChild(tile({ icon: "search", title: "Look up a unit", sub: units ? "search · scan a label" : "nothing captured yet", on: () => go("lookup"), disabled: !units }));
+  T.appendChild(tile({ icon: "units", title: "Units", sub: `${units} tracked`, on: () => { app.recTab = "units"; go("records"); } }));
+  T.appendChild(tile({ icon: "events", title: "Events", sub: `${rows.length} capture${rows.length === 1 ? "" : "s"}`, on: () => { app.recTab = "events"; go("records"); } }));
+  T.appendChild(tile({ icon: "map", title: "Map", sub: `${pinned} pinned`, on: () => { app.recTab = "map"; go("records"); } }));
+  if (settings.api) {
+    T.appendChild(tile({ icon: "send", title: unsent ? "Send unsent" : "All sent", sub: unsent ? `${unsent} waiting` : "endpoint up to date", hot: unsent > 0, quiet: !unsent,
+      disabled: !unsent, on: () => sendAll(rows.filter((r) => r.status !== "sent" || r.dirty)) }));
+    T.appendChild(tile({ icon: "export", title: "Export", sub: "CSV · JSON", on: () => go("settings"), disabled: !rows.length }));
+  } else {
+    T.appendChild(tile({ icon: "export", title: "Export", sub: rows.length ? "CSV · JSON" : "nothing to export", on: () => go("settings"), disabled: !rows.length }));
+    T.appendChild(tile({ icon: "settings", title: "Upstream", sub: "local only · add endpoint", quiet: true, on: () => go("settings") }));
+  }
+
+  const R = $("recent");
+  R.textContent = "";
+  const recent = rows.slice(0, 3);
+  $("recentN").textContent = rows.length > 3 ? `${recent.length} of ${rows.length}` : "";
+  if (!recent.length) R.appendChild(el("div", "empty", "Your first capture will appear here."));
+  recent.forEach((r) => R.appendChild(recRow(r, () => { app.current = r; go("detail"); })));
+  if (rows.length > 3) {
+    const more = el("button", "btn ghost slim", "See all events");
+    more.style.margin = "10px var(--pad) 0"; more.style.width = "calc(100% - 2 * var(--pad))";
+    more.addEventListener("click", () => { app.recTab = "events"; go("records"); });
+    R.appendChild(more);
+  }
+
+  dock({
+    hint: decoder.ready && !decoder.available() ? "Scanner engine unavailable — key serials in by hand" : (context.storeId || context.retailer ? `Logging to ${[context.retailer, context.storeId].filter(Boolean).join(" ")}` : ""),
+    rows: [[{ label: "Start scan", kind: "primary", on: () => { app.scanMode = "capture"; go("scan"); } }]]
+  });
+}
+
+/* ══ LOOK UP ═════════════════════════════════════════════════════════════ */
+async function enterLookup() {
+  clearThumbs();
+  const rows = await allRecords();
+  const byCode = new Map();
+  rows.forEach((r) => { if (!byCode.has(r.code)) byCode.set(r.code, []); byCode.get(r.code).push(r); });
+  const q = $("lkQ"), list = $("lkList");
+  const render = () => {
+    const needle = q.value.trim().toLowerCase();
+    list.textContent = "";
+    let n = 0;
+    byCode.forEach((evs, code) => {
+      const last = evs[0];
+      const hay = [code, last.storeId, last.retailer, last.displayType].filter(Boolean).join(" ").toLowerCase();
+      if (needle && !hay.includes(needle)) return;
+      n++;
+      const b = el("button", "rec");
+      const th = el("div", "thumb");
+      const ph = photosOf(last);
+      if (ph.length) th.style.backgroundImage = `url("${thumbUrl(ph[0])}")`; else th.textContent = "NO IMG";
+      const bd = el("div", "body");
+      bd.appendChild(el("div", "code", code));
+      const where = [last.retailer, last.storeId].filter(Boolean).join(" ") || (last.lat != null ? `${last.lat.toFixed(4)}, ${last.lon.toFixed(4)}` : "no fix");
+      bd.appendChild(el("div", "meta", `last ${humanStamp(new Date(last.capturedAt))}  ·  ${where}`));
+      const c = el("div", "count");
+      c.appendChild(el("b", null, String(evs.length)));
+      c.appendChild(document.createTextNode(evs.length === 1 ? "event" : "events"));
+      b.append(th, bd, c);
+      b.addEventListener("click", () => { app.currentUnit = code; go("unit"); });
+      list.appendChild(b);
+    });
+    if (!n) list.appendChild(el("div", "empty", needle ? `No unit on this phone matches “${q.value.trim()}”. Scan its label to check, or start a capture.` : "No units captured yet."));
+  };
+  q.value = "";
+  q.oninput = render;
+  render();
+  setTimeout(() => q.focus(), 60);
+  dock({
+    hint: "",
+    rows: [
+      [{ label: "Scan a label to look up", kind: "primary", on: () => { app.scanMode = "lookup"; go("scan"); } }],
+      [{ label: "Home", kind: "ghost", on: () => go("home") }]
+    ]
+  });
+}
+
+/* ══ LOCATION: receiver + site pin ═══════════════════════════════════════
+   The site pin is a position set by hand — address, typed coordinates, or a
+   frozen phone fix — that persists across units at one site. It is offered
+   on every Fix step and adopted automatically when the phone has no fix.  */
+
+function setPin(pin) {
+  context.pin = pin || null;
+  persist(CKEY, context);
+  if (geo.watchId == null) setGpsChip("idle", "Location");
+}
+
+function renderRx() {
+  const on = geo.watchId != null, b = geo.best;
+  $("locRxState").textContent = !on ? "off" : b ? "live" : "searching…";
+  const acc = $("locRxAcc");
+  acc.textContent = b ? `±${Math.round(b.coords.accuracy)} m` : on ? "waiting for first fix" : "—";
+  acc.dataset.q = b ? accQuality(b.coords.accuracy) : "poor";
+  $("locRxWhen").textContent = b ? humanStamp(new Date(geo.bestAt)) : "—";
+  $("locRxPos").textContent = b ? `${f8(b.coords.latitude)}, ${f8(b.coords.longitude)}` : "—";
+  $("btnRx").textContent = on ? "Stop receiver" : "Start receiver";
+  $("btnRxUse").disabled = !b;
+}
+
+function renderPin() {
+  const p = context.pin;
+  $("locPinState").textContent = p ? srcLabel(p.source) : "none set";
+  const latIn = $("locLat"), lonIn = $("locLon");
+  if (document.activeElement !== latIn) latIn.value = p ? f8(p.lat) : "";
+  if (document.activeElement !== lonIn) lonIn.value = p ? f8(p.lon) : "";
+  const note = $("locPinNote");
+  if (p) {
+    note.hidden = false;
+    note.textContent = "";
+    note.appendChild(el("b", null, p.label ? p.label + ". " : "Pinned. "));
+    note.appendChild(document.createTextNode(addrLine(p.addr) ? addrLine(p.addr) + ". " : ""));
+    note.appendChild(document.createTextNode("Offered on every capture at this site; used automatically when the phone has no fix."));
+  } else note.hidden = true;
+  $("btnPinMaps").disabled = !p; $("btnPinClear").disabled = !p;
+
+  const box = $("locMap");
+  if (!maps.ok() || !p) { box.hidden = true; maps.kill(app.locMap); app.locMap = app.locMarker = null; return; }
+  box.hidden = false;
+  const ll = [p.lat, p.lon];
+  if (!app.locMap) {
+    app.locMap = maps.make(box, ll, 17);
+    app.locMap.on("blocked", () => { maps.kill(app.locMap); app.locMap = app.locMarker = null; box.hidden = true; });
+    app.locMarker = L.marker(ll, { draggable: true, icon: pinIcon(false), keyboard: false }).addTo(app.locMap);
+    app.locMarker.on("dragend", () => {
+      const q = app.locMarker.getLatLng();
+      setPin({ lat: q.lat, lon: q.lng, source: "adjusted", label: "Pin dragged", addr: null });
+      renderPin();
+    });
+    setTimeout(() => app.locMap && app.locMap.invalidateSize(), 50);
+  } else {
+    app.locMarker.setLatLng(ll);
+    app.locMap.panTo(ll);
+  }
+}
+
+async function enterLocation() {
+  renderRx(); renderPin();
+  $("locResults").textContent = "";
+  $("locAddr").value = "";
+  if (geo.watchId != null) geo.onUpdate = renderRx;
+
+  $("btnRx").onclick = () => {
+    if (geo.watchId != null) { geo.stop(); renderRx(); return; }
+    geo.keep = true;
+    geo.start(renderRx, (e) => { renderRx(); toast(e.code === 1 ? "Location permission is denied for this page." : "The receiver returned nothing."); });
+    renderRx();
+  };
+  $("btnRxUse").onclick = () => {
+    const b = geo.best; if (!b) return;
+    setPin({ lat: b.coords.latitude, lon: b.coords.longitude, source: "gps", label: `Phone fix ±${Math.round(b.coords.accuracy)} m`, addr: null });
+    renderPin(); toast("Pinned the current fix for this site.");
+  };
+
+  const onEdit = () => {
+    const lat = parseFloat($("locLat").value), lon = parseFloat($("locLon").value);
+    const okLat = isFinite(lat) && Math.abs(lat) <= 90, okLon = isFinite(lon) && Math.abs(lon) <= 180;
+    $("locLat").setAttribute("aria-invalid", String(!okLat)); $("locLon").setAttribute("aria-invalid", String(!okLon));
+    if (!okLat || !okLon) return;
+    setPin({ lat, lon, source: "manual", label: "Typed coordinates", addr: null });
+    renderPin();
+  };
+  $("locLat").oninput = onEdit; $("locLon").oninput = onEdit;
+
+  const results = $("locResults");
+  const find = async () => {
+    const q = $("locAddr").value.trim();
+    if (!q) { toast("Type an address first."); return; }
+    results.textContent = "";
+    const wrap = el("div", "geo-res");
+    wrap.appendChild(el("div", "status", "Looking up…"));
+    results.appendChild(wrap);
+    let hits;
+    try { hits = await geocode(q); }
+    catch (e) {
+      wrap.textContent = "";
+      wrap.appendChild(el("div", "status", "Address lookup is not reachable from this host. Type the coordinates instead, or open Maps, long-press the spot, and copy the pair."));
+      return;
+    }
+    wrap.textContent = "";
+    if (!hits || !hits.length) { wrap.appendChild(el("div", "status", `Nothing found for “${q}”. Try adding the city or postcode.`)); return; }
+    hits.forEach((h) => {
+      const b = el("button");
+      const a = addrFields(h.address);
+      b.appendChild(el("div", "a", a && (a.address || a.city) ? [a.address, a.city, a.subdivision1].filter(Boolean).join(", ") : h.display_name));
+      b.appendChild(el("div", "b", `${h.type ? h.type.replace(/_/g, " ") + " · " : ""}${Number(h.lat).toFixed(5)}, ${Number(h.lon).toFixed(5)}`));
+      b.addEventListener("click", () => {
+        setPin({ lat: Number(h.lat), lon: Number(h.lon), source: "address", label: (a && a.address) || h.display_name.split(",")[0], addr: a });
+        results.textContent = "";
+        renderPin();
+        toast("Pin dropped at that address.");
+      });
+      wrap.appendChild(b);
+    });
+  };
+  $("btnGeocode").onclick = find;
+  $("locAddr").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); find(); } };
+
+  $("btnPinMaps").onclick = () => { const p = context.pin; if (p) window.open(`https://maps.apple.com/?ll=${p.lat},${p.lon}&q=${encodeURIComponent(p.label || "site pin")}`, "_blank", "noopener"); };
+  $("btnPinClear").onclick = () => { setPin(null); renderPin(); toast("Site pin cleared."); };
+
+  const back = app.locReturn || "home";
+  const rows = [];
+  if (back === "fix") {
+    rows.push([{ label: "Use pin for this capture", kind: "primary", on: () => {
+      const p = context.pin; if (!p) { toast("Set a pin first — an address, coordinates, or the current fix."); return; }
+      adoptPin();
+      app.locReturn = null; go("fix");
+    } }]);
+    rows.push([{ label: "Back to capture", kind: "ghost", on: () => { app.locReturn = null; go("fix"); } }]);
+  } else {
+    rows.push([{ label: "Done", kind: "primary", on: () => { app.locReturn = null; go(back); } }]);
+  }
+  dock({ hint: geo.keep && geo.watchId != null ? "Receiver stays on until you stop it or sign out" : "", rows });
+}
+
+/* ══ SCAN ════════════════════════════════════════════════════════════════ */
+const scanCanvas = document.createElement("canvas");
+
+async function enterScan() {
+  const lookup = app.scanMode === "lookup";
+  $("scanReticle").className = "reticle hunting";
+  $("scanNote").textContent = lookup ? "Scan a label to open that unit's history" : "Fill the brackets with the label · hold steady";
+  dock({
+    hint: lookup ? "Looking up — nothing is captured" : "",
+    rows: [[
+      { label: "Key in serial", kind: "ghost", on: manualEntry },
+      { label: "Cancel", kind: "ghost", on: () => go(lookup ? "lookup" : "home") }
+    ]]
+  });
+  try { await cam.open($("scanVid")); }
+  catch (e) { cameraFailed(e, "scan"); return; }
+
+  /* location confirmation starts at the top of the flow, not at step 3 */
+  if (!lookup) geo.start(null, null);
+
+  const t = $("btnTorch");
+  if (cam.torchCapable()) {
+    t.hidden = false; t.setAttribute("aria-pressed", "false");
+    t.onclick = async () => {
+      const want = t.getAttribute("aria-pressed") !== "true";
+      if (await cam.torch(want)) t.setAttribute("aria-pressed", String(want)); else toast("This camera will not expose its torch to the browser.");
+    };
+  } else t.hidden = true;
+
+  if (!(await decoder.init())) { $("scanNote").textContent = "No decoder available in this browser — key the serial in instead"; return; }
+  startScanLoop();
+}
+
+function startScanLoop() {
+  app.scanning = true;
+  const video = $("scanVid"), ctx = scanCanvas.getContext("2d", { willReadFrequently: true });
+  const tick = async (ts) => {
+    if (!app.scanning) return;
+    app.rafId = requestAnimationFrame(tick);
+    if (ts - app.lastFrame < 110) return;
+    app.lastFrame = ts;
+    if (video.readyState < 2 || !video.videoWidth) return;
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const cw = Math.round(vw * 0.86), ch = Math.round(Math.min(vh * 0.72, cw * 0.75));
+    const sx = Math.round((vw - cw) / 2), sy = Math.round((vh - ch) / 2);
+    const out = Math.min(720, cw), scale = out / cw;
+    scanCanvas.width = out; scanCanvas.height = Math.round(ch * scale);
+    ctx.drawImage(video, sx, sy, cw, ch, 0, 0, scanCanvas.width, scanCanvas.height);
+    let hit = null;
+    try { hit = await decoder.read(scanCanvas); } catch (e) { hit = null; }
+    if (hit && hit.text) onScanHit(hit);
+  };
+  app.rafId = requestAnimationFrame(tick);
+}
+function stopScanLoop() { app.scanning = false; if (app.rafId) cancelAnimationFrame(app.rafId); app.rafId = null; }
+
+function onScanHit(hit) {
+  stopScanLoop();
+  buzz(30);
+  $("scanReticle").className = "reticle hit";
+  $("scanNote").textContent = hit.text;
+  app.payload = parsePayload(hit.text);
+  app.code = app.payload.code;
+  app.format = hit.format || "UNKNOWN";
+  app.readAt = new Date();
+  if (app.scanMode === "lookup") { app.currentUnit = app.code; setTimeout(() => go("unit"), 260); return; }
+  setTimeout(() => go("scanned"), 260);
+}
+
+function cameraFailed(e, from) {
+  const denied = e && (e.name === "NotAllowedError" || e.name === "SecurityError");
+  const insecure = !window.isSecureContext;
+  const embedded = window.top !== window.self;     /* an artifact viewer or another site's frame */
+  go("done").then(() => {
+    $("rail").hidden = true;
+    $("doneEcho").hidden = true;
+    $("doneStamp").className = "stamp err"; $("doneStamp").textContent = "!";
+    $("doneTitle").textContent = insecure ? "Needs a secure origin" : embedded ? "This viewer cannot open the camera" : denied ? "Camera blocked" : "Camera unavailable";
+    $("doneBody").textContent = insecure
+      ? "Browsers only hand out the camera over HTTPS. Open this page on an https:// address and try again."
+      : embedded
+      ? "The app is running inside another page's frame — a preview or in-app viewer — and iOS does not grant camera access there. It is not a setting you can change. Host GeoBarcode-web.html on its own HTTPS address and open that in Safari; everything else works here in the meantime."
+      : denied ? "Safari has the camera turned off for this site. Tap the ᴬᴬ or ⋯ button at the left of the address bar → Website Settings → Camera → Allow, then reload."
+      : "No usable rear camera answered: " + ((e && e.message) || "unknown error") + ".";
+    dock({ rows: [[
+      { label: from === "scan" ? "Key in serial" : "Skip photos", kind: "primary", on: from === "scan" ? manualEntry : () => go("fix") },
+      { label: "Home", kind: "ghost", on: () => go("home") }
+    ]] });
+  });
+}
+
+function manualEntry() {
+  const v = window.prompt("Serial / device ID from the label:", app.code || "");
+  if (v == null) return;
+  const t = v.trim();
+  if (!t) { toast("Nothing entered."); return; }
+  stopScanLoop(); cam.close();
+  app.payload = parsePayload(t);
+  app.code = app.payload.code;
+  app.format = "MANUAL";
+  app.readAt = new Date();
+  if (app.scanMode === "lookup") { app.currentUnit = app.code; go("unit"); return; }
+  go("scanned");
+}
+
+/* ══ SCANNED ═════════════════════════════════════════════════════════════ */
+function ledgerRow(container, k, v, cls) {
+  const row = el("div", "row");
+  row.appendChild(el("span", "k", k));
+  const val = el("span", "v" + (cls ? " " + cls : ""));
+  if (v instanceof Node) val.appendChild(v); else val.textContent = v;
+  row.appendChild(val);
+  container.appendChild(row);
+  return val;
+}
+
+async function enterScanned() {
+  const ok = patternCheck(app.code);
+  const sc = $("scCode");
+  sc.textContent = app.code;
+  if (ok === false) sc.appendChild(el("span", "warn", "PATTERN MISMATCH"));
+
+  const L_ = $("scLedger");
+  L_.textContent = "";
+  ledgerRow(L_, "Symbology", fmtLabel(app.format));
+  ledgerRow(L_, "Characters", String(app.code.length));
+  if (settings.pattern) {
+    const v = ledgerRow(L_, "Validation", ok === null ? "pattern is not a valid regex" : ok ? "matches expected pattern" : "does not match pattern");
+    v.className = "v acc"; v.dataset.q = ok ? "good" : "poor";
+  }
+  if (app.payload && app.payload.structured) {
+    if (app.payload.displayType) ledgerRow(L_, "Display type", app.payload.displayType);
+    if (app.payload.storeId) ledgerRow(L_, "Store ID", app.payload.storeId);
+    if (app.payload.retailer) ledgerRow(L_, "Retailer", app.payload.retailer);
+  }
+  ledgerRow(L_, "Read at", humanStamp(app.readAt));
+
+  /* custody context: has this unit been seen before? */
+  const prior = (await allRecords()).filter((r) => r.code === app.code);
+  const note = $("scNote");
+  if (prior.length) {
+    const last = prior[0];
+    note.textContent = "";
+    note.appendChild(el("b", null, `Seen ${prior.length} time${prior.length > 1 ? "s" : ""} before. `));
+    note.appendChild(document.createTextNode(`Last ${humanDate(new Date(last.capturedAt))}` + (last.storeId || last.retailer ? ` at ${[last.retailer, last.storeId].filter(Boolean).join(" ")}` : "") + (last.userName ? ` by ${last.userName}` : "") + ". This capture becomes the next event in its history."));
+  } else {
+    note.textContent = "First time this unit has been captured on this phone. Check the serial against the label before you shoot — mis-scans are expensive to fix in the fleet record.";
+  }
+
+  dock({ rows: [
+    [{ label: "Add photos", kind: "primary", on: () => go("photo") }],
+    [{ label: "Rescan", kind: "ghost", on: () => go("scan") }, { label: "Edit serial", kind: "ghost", on: manualEntry }]
+  ] });
+}
+
+/* ══ PHOTO CAPTURE (n shots) ═════════════════════════════════════════════ */
+function renderStrip() {
+  const s = $("strip");
+  s.textContent = "";
+  app.photos.forEach((p) => { const t = el("div", "th"); t.style.backgroundImage = `url("${p.url}")`; s.appendChild(t); });
+  s.scrollLeft = s.scrollWidth;
+  photoDock();
+}
+function photoDock() {
+  const n = app.photos.length;
+  dock({
+    hint: n ? `${n} shot${n > 1 ? "s" : ""} taken` : "The photo set is the install evidence",
+    rows: [[
+      { label: "Back", kind: "ghost", on: () => go(n ? "photos" : "scanned") },
+      { shutter: true, label: "Take photo", on: takePhoto },
+      { label: n ? `Review · ${n}` : "Skip", kind: n ? "primary" : "ghost", on: () => go(n ? "photos" : "fix") }
+    ]]
+  });
+}
+async function enterPhoto() {
+  renderStrip();
+  try { await cam.open($("photoVid")); } catch (e) { cameraFailed(e, "photo"); }
+}
+async function takePhoto() {
+  const video = $("photoVid");
+  if (!video.videoWidth) { toast("Camera is still warming up."); return; }
+  const long = 1600, scale = Math.min(1, long / Math.max(video.videoWidth, video.videoHeight));
+  const c = document.createElement("canvas");
+  c.width = Math.round(video.videoWidth * scale); c.height = Math.round(video.videoHeight * scale);
+  c.getContext("2d").drawImage(video, 0, 0, c.width, c.height);
+  const blob = await new Promise((res) => c.toBlob(res, "image/jpeg", 0.72));
+  if (!blob) { toast("Could not encode the photo."); return; }
+  buzz(20);
+  app.photos.push({ blob, url: URL.createObjectURL(blob), selected: true });
+  renderStrip();
+}
+
+/* ══ PHOTO REVIEW (select / discard) ═════════════════════════════════════ */
+async function enterPhotos() {
+  const g = $("plates");
+  g.textContent = "";
+  app.photos.forEach((p, i) => {
+    const b = el("button", "p");
+    b.style.backgroundImage = `url("${p.url}")`;
+    b.setAttribute("aria-pressed", String(p.selected));
+    b.appendChild(el("span", "tick", "✓"));
+    b.appendChild(el("span", "n", String(i + 1)));
+    b.addEventListener("click", () => { p.selected = !p.selected; b.setAttribute("aria-pressed", String(p.selected)); photosDock(); });
+    g.appendChild(b);
+  });
+  const add = el("button", "p add", "+ MORE");
+  add.addEventListener("click", () => go("photo"));
+  g.appendChild(add);
+  photosDock();
+}
+function photosDock() {
+  const n = app.photos.filter((p) => p.selected).length;
+  dock({
+    hint: `${n} of ${app.photos.length} will be logged`,
+    rows: [
+      [{ label: n ? `Continue with ${n}` : "Continue without photos", kind: "primary", on: () => go("fix") }],
+      [{ label: "Back to camera", kind: "ghost", on: () => go("photo") }]
+    ]
+  });
+}
+
+/* ══ FIX / ADJUST ════════════════════════════════════════════════════════ */
+function setLoc(lat, lon, acc, source) {
+  app.loc = { lat, lon, acc: acc == null ? null : Math.round(acc), source };
+}
+function adoptPin() {
+  const p = context.pin;
+  setLoc(p.lat, p.lon, null, "site");
+  app.locAddr = p.addr || null;
+  app.locTouched = true;
+}
+function renderFix() {
+  const l = app.loc;
+  const has = l && isFinite(l.lat) && isFinite(l.lon);
+  $("fixTitle").textContent = !has ? "Acquiring fix" : l.source === "gps" ? "Fix acquired" : l.source === "site" || l.source === "address" ? "Using the site pin" : "Fix adjusted";
+  $("fixLede").textContent = !has
+    ? "Waiting for the receiver. Indoors this can take 15–30 s; near a window or door is faster. You can also type the coordinates or set one by address."
+    : l.source === "gps" ? "Drag the pin or edit the coordinates if the fix lands in the wrong place — the record keeps the fact that a person adjusted it."
+    : l.source === "site" || l.source === "address" ? "Position comes from the pin you set for this site. Switch to the phone's own fix below if it is good here."
+    : "Adjusted by hand. The receiver's own fix is still available below.";
+  const latIn = $("fxLat"), lonIn = $("fxLon");
+  if (document.activeElement !== latIn) latIn.value = has ? f8(l.lat) : "";
+  if (document.activeElement !== lonIn) lonIn.value = has ? f8(l.lon) : "";
+  const acc = $("fxAcc");
+  const best = geo.best;
+  acc.textContent = best ? `±${Math.round(best.coords.accuracy)} m` : "no fix yet";
+  acc.dataset.q = best ? accQuality(best.coords.accuracy) : "poor";
+  $("fxSrc").textContent = !has ? "—" : srcLabel(l.source);
+  $("btnUsePhone").disabled = !best;
+  $("btnUsePin").disabled = !context.pin;
+  $("btnOpenMaps").disabled = !has;
+  updateFixMap();
+}
+function updateFixMap() {
+  const box = $("mapbox");
+  const l = app.loc, has = l && isFinite(l.lat) && isFinite(l.lon);
+  if (!maps.ok()) {
+    box.hidden = true;
+    const note = $("mapNote");
+    note.hidden = false;
+    if (typeof L === "undefined") note.textContent = "Map library did not load. Edit the coordinates directly, or open the pair in Maps to check it.";
+    return;
+  }
+  box.hidden = !has;
+  $("mapNote").hidden = true;
+  if (!has) return;
+  const ll = [l.lat, l.lon];
+  if (!app.fixMap) {
+    app.fixMap = maps.make(box, ll, l.acc && l.acc > 80 ? 16 : 18);
+    app.fixMap.on("blocked", () => { maps.kill(app.fixMap); app.fixMap = app.fixMarker = app.fixCircle = null; box.hidden = true; $("mapNote").hidden = false; });
+    app.fixMarker = L.marker(ll, { draggable: true, icon: pinIcon(false), keyboard: false }).addTo(app.fixMap);
+    app.fixMarker.on("dragend", () => {
+      const p = app.fixMarker.getLatLng();
+      setLoc(p.lat, p.lng, null, "adjusted");   /* receiver accuracy no longer describes this point */
+      app.locTouched = true;
+      renderFix();
+    });
+    app.fixCircle = L.circle(ll, { radius: l.acc || 0, color: "#F2A33C", weight: 1, fillColor: "#F2A33C", fillOpacity: 0.12, interactive: false }).addTo(app.fixMap);
+    setTimeout(() => app.fixMap && app.fixMap.invalidateSize(), 50);
+  } else {
+    app.fixMarker.setLatLng(ll);
+    if (l.source === "gps") { app.fixCircle.setLatLng(ll); app.fixCircle.setRadius(l.acc || 0); app.fixMap.panTo(ll); }
+  }
+}
+
+let fixSettle;
+async function enterFix() {
+  clearTimeout(fixSettle);
+  if (!app.loc && geo.best) setLoc(geo.best.coords.latitude, geo.best.coords.longitude, geo.best.coords.accuracy, "gps");
+  /* no fix yet but a site pin exists: start from the pin, and hold it —
+     a late, poor indoor fix must not silently move a deliberate position */
+  if (!app.loc && context.pin) { adoptPin(); }
+  renderFix();
+
+  geo.start(
+    (p) => {
+      if (!app.locTouched) setLoc(p.coords.latitude, p.coords.longitude, p.coords.accuracy, "gps");
+      renderFix();
+    },
+    (e) => {
+      $("fixTitle").textContent = e.code === 1 ? "Location blocked" : "No position";
+      $("fixLede").textContent = e.code === 1
+        ? "Location permission is denied for this page. Allow it in the address-bar site settings, or type the coordinates and add a Store ID on the next screen."
+        : "The receiver returned nothing. Type the coordinates, or continue and identify the site by Store ID.";
+    }
+  );
+
+  const onEdit = () => {
+    const lat = parseFloat($("fxLat").value), lon = parseFloat($("fxLon").value);
+    const ok = isFinite(lat) && isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+    $("fxLat").setAttribute("aria-invalid", String(!(isFinite(lat) && Math.abs(lat) <= 90)));
+    $("fxLon").setAttribute("aria-invalid", String(!(isFinite(lon) && Math.abs(lon) <= 180)));
+    if (!ok) return;
+    setLoc(lat, lon, null, "manual");
+    app.locTouched = true;
+    renderFix();
+  };
+  $("fxLat").oninput = onEdit; $("fxLon").oninput = onEdit;
+  $("btnUsePhone").onclick = () => {
+    if (!geo.best) return;
+    app.locTouched = false; app.locAddr = null;
+    setLoc(geo.best.coords.latitude, geo.best.coords.longitude, geo.best.coords.accuracy, "gps");
+    renderFix();
+    if (app.fixMap) app.fixMap.setView([app.loc.lat, app.loc.lon], 18);
+  };
+  $("btnUsePin").onclick = () => {
+    if (!context.pin) return;
+    adoptPin(); renderFix();
+    if (app.fixMap) app.fixMap.setView([app.loc.lat, app.loc.lon], 18);
+  };
+  $("btnFixAddr").onclick = () => { app.locReturn = "fix"; go("location"); };
+  $("btnOpenMaps").onclick = () => {
+    if (!app.loc) return;
+    window.open(`https://maps.apple.com/?q=${encodeURIComponent(app.code || "capture")}&ll=${app.loc.lat},${app.loc.lon}`, "_blank", "noopener");
+  };
+
+  dock({
+    hint: "",
+    rows: [
+      [{ label: "Continue", kind: "primary", on: () => { app.capturedAt = new Date(); go("confirm"); } }],
+      [{ label: "Back", kind: "ghost", on: () => go(app.photos.length ? "photos" : "scanned") }]
+    ]
+  });
+}
+
+/* ══ CONFIRM ═════════════════════════════════════════════════════════════ */
+function optCount() {
+  const n = ["cfStore","cfRetailer","cfDisplay"].filter((id) => $(id).value.trim()).length;
+  $("optCount").textContent = n ? `${n} filled` : "";
+}
+async function enterConfirm() {
+  const l = app.loc, has = l && isFinite(l.lat) && isFinite(l.lon);
+  const d = app.capturedAt || (app.capturedAt = new Date());
+  $("cfCode").textContent = app.code;
+
+  const g = $("cfPlates");
+  g.textContent = "";
+  const sel = app.photos.filter((p) => p.selected);
+  sel.forEach((p, i) => {
+    const b = el("button", "p");
+    b.style.backgroundImage = `url("${p.url}")`;
+    b.setAttribute("aria-pressed", "true");
+    b.appendChild(el("span", "n", String(i + 1)));
+    b.addEventListener("click", () => lightbox(p.url));
+    g.appendChild(b);
+  });
+  g.hidden = !sel.length;
+
+  const L_ = $("cfLedger");
+  L_.textContent = "";
+  ledgerRow(L_, "Symbology", fmtLabel(app.format));
+  ledgerRow(L_, "Photos", sel.length ? String(sel.length) : "none");
+  ledgerRow(L_, "Latitude", has ? f8(l.lat) + "°" : "not captured");
+  ledgerRow(L_, "Longitude", has ? f8(l.lon) + "°" : "not captured");
+  const a = ledgerRow(L_, "Accuracy", has && l.acc != null ? `±${l.acc} m` : has ? "n/a (adjusted)" : "none");
+  a.className = "v acc"; a.dataset.q = has && l.acc != null ? accQuality(l.acc) : "poor";
+  ledgerRow(L_, "Position source", !has ? "—" : srcLabel(l.source));
+  if (app.locAddr && addrLine(app.locAddr)) ledgerRow(L_, "Address", addrLine(app.locAddr), "wide");
+  ledgerRow(L_, "Local time", localStamp(d));
+  ledgerRow(L_, "UTC", utcStamp(d));
+  ledgerRow(L_, "Captured by", `${identity.name}${identity.org ? " · " + identity.org : ""}`);
+  ledgerRow(L_, "Destination", settings.api ? "device + endpoint" : "this device");
+
+  /* optional entry: prefill from QR payload, then from the sticky site context */
+  const p = app.payload || {};
+  if (!$("cfStore").dataset.touched) $("cfStore").value = p.storeId || context.storeId || "";
+  if (!$("cfRetailer").dataset.touched) $("cfRetailer").value = p.retailer || context.retailer || "";
+  if (!$("cfDisplay").dataset.touched) $("cfDisplay").value = p.displayType || "";
+  ["cfStore","cfRetailer","cfDisplay","cfNotes"].forEach((id) => { $(id).oninput = () => { $(id).dataset.touched = "1"; optCount(); }; });
+  optCount();
+  if (!has) $("optDetails").open = true;   /* no fix → the Store ID is the location */
+
+  dock({
+    hint: !has ? "No position — add a Store ID so the site can still be resolved" : settings.api ? "Saves here, then posts to your endpoint" : "Saves to this device",
+    rows: [
+      [{ label: settings.api ? "Log & send" : "Log capture", kind: "primary", on: commit }],
+      [{ label: "Back", kind: "ghost", on: () => go("fix") }, { label: "Discard", kind: "danger", on: () => { if (confirm("Discard this capture?")) go("home"); } }]
+    ]
+  });
+}
+
+function lightbox(url, capNode) {
+  $("lbImg").src = url;
+  const cap = $("lbCap");
+  cap.textContent = ""; cap.hidden = !capNode;
+  if (capNode) cap.appendChild(capNode);
+  $("lbImg").style.padding = capNode ? "" : "0"; $("lbImg").style.background = capNode ? "" : "transparent";
+  $("lightbox").hidden = false;
+}
+function closeLightbox() { $("lightbox").hidden = true; $("lbImg").src = ""; $("lbCap").textContent = ""; }
+$("lbClose").addEventListener("click", closeLightbox);
+$("lightbox").addEventListener("click", (e) => { if (e.target === e.currentTarget || e.target.classList.contains("lb-stack")) closeLightbox(); });
+
+/* ══ COMMIT ══════════════════════════════════════════════════════════════ */
+function newId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return "r-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+}
+
+function buildEnvelope(rec) {
+  const d = new Date(rec.capturedAt);
+  const a = rec.addr || {};
+  return {
+    envelope: { protocolVersion: "1.0", payloadType: "GeoBarcode", payloadProtocolVersion: "1.0", uniqueId: rec.id, time: localStamp(d) },
+    payload: "",
+    httpdata: {
+      deviceId: rec.code,
+      barcodeFormat: rec.format,
+      latitude: rec.lat, longitude: rec.lon,
+      accuracyMeters: rec.acc,
+      positionSource: rec.locSource || "",
+      deviceStatus: "",
+      /* the 2016 contract's address block, now filled when a geocoder answered */
+      address: a.address || "", city: a.city || "", subdivision1: a.subdivision1 || "", subdivision2: a.subdivision2 || "",
+      postalCode: a.postalCode || "", country: a.country || "", countryiso2: a.countryiso2 || "", countryiso3: a.countryiso3 || "", isp: "",
+      time: utcStamp(d),
+      timeZone: tzAbbrev(d),
+      imageLoc: (rec.imageLocs && rec.imageLocs[0]) || "",
+      imageLocs: rec.imageLocs || [],
+      photoCount: photosOf(rec).length,
+      userId: rec.userId || "", userName: rec.userName || "", vendor: rec.vendor || "",
+      storeId: rec.storeId || "", retailer: rec.retailer || "", displayType: rec.displayType || "",
+      notes: rec.notes || "",
+      annotations: (rec.annotations || []).map((a) => ({ time: utcStamp(new Date(a.at)), by: a.by, text: a.text }))
+    }
+  };
+}
+
+async function commit() {
+  const d = app.capturedAt || new Date();
+  const l = app.loc, has = l && isFinite(l.lat) && isFinite(l.lon);
+  const sel = app.photos.filter((p) => p.selected);
+  const rec = {
+    id: newId(),
+    code: app.code, format: app.format,
+    capturedAt: d.getTime(),
+    lat: has ? l.lat : null, lon: has ? l.lon : null,
+    acc: has ? l.acc : null, locSource: has ? l.source : "",
+    addr: has ? (app.locAddr || null) : null,
+    photos: sel.map((p) => p.blob), photoType: "image/jpeg",
+    userId: identity.email, userName: identity.name, vendor: identity.org || "",
+    storeId: $("cfStore").value.trim(), retailer: $("cfRetailer").value.trim(),
+    displayType: $("cfDisplay").value.trim(), notes: $("cfNotes").value.trim(),
+    annotations: [],                              /* later notes: {at, by, text}, append-only */
+    status: "local", imageLocs: [], error: "", echo: null
+  };
+  /* the site sticks for the next unit on this visit */
+  context = { storeId: rec.storeId, retailer: rec.retailer };
+  persist(CKEY, context);
+  ["cfStore","cfRetailer","cfDisplay","cfNotes"].forEach((id) => { delete $(id).dataset.touched; $(id).value = ""; });
+
+  await go("sending");
+  $("sendTitle").textContent = "Logging";
+  $("sendStep").textContent = "Writing to this device…";
+  dock(null);
+
+  try { await putRecord(rec); }
+  catch (e) {
+    await go("done");
+    $("doneEcho").hidden = true;
+    $("doneStamp").className = "stamp err"; $("doneStamp").textContent = "!";
+    $("doneTitle").textContent = "Could not save";
+    $("doneBody").textContent = "Local storage refused the write: " + (e.message || e) + ". Private browsing blocks it.";
+    dock({ rows: [[{ label: "Home", kind: "primary", on: () => go("home") }]] });
+    return;
+  }
+
+  /* the wireframes showed "Best Buy, 1010 Smith Rd" under every capture:
+     resolve the address after the local save, best-effort, short timeout */
+  if (rec.lat != null && !rec.addr) {
+    $("sendStep").textContent = "Resolving address…";
+    try {
+      const rv = await reverseGeocode(rec.lat, rec.lon);
+      rec.addr = addrFields(rv && rv.address);
+      if (rec.addr) await putRecord(rec);
+    } catch (e) { /* offline or blocked host: the coordinates stand on their own */ }
+  }
+
+  if (!settings.api && !settings.upload) { finishDone(rec); return; }
+  await send(rec);
+}
+
+async function send(rec, quiet) {
+  const photos = photosOf(rec);
+  let uploadErr = null;
+  if (settings.upload && photos.length) {
+    const d = new Date(rec.capturedAt);
+    rec.imageLocs = rec.imageLocs || [];
+    for (let i = 0; i < photos.length; i++) {
+      if (rec.imageLocs[i]) continue;   /* already up from a previous attempt */
+      $("sendStep").textContent = `Uploading photo ${i + 1} of ${photos.length}…`;
+      const url = settings.upload
+        .replace(/\{code\}/g, encodeURIComponent(rec.code)).replace(/\{ts\}/g, folderStamp(d)).replace(/\{n\}/g, String(i + 1));
+      try {
+        const res = await fetch(url, { method: "PUT", headers: { "Content-Type": "image/jpeg" }, body: photos[i] });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        rec.imageLocs[i] = url.split("?")[0];
+      } catch (e) { uploadErr = e; break; }
+    }
+  }
+  if (settings.api) {
+    $("sendStep").textContent = "Posting capture…";
+    const headers = { "Content-Type": "application/json" };
+    if (settings.key) headers["x-api-key"] = settings.key;
+    try {
+      const res = await fetch(settings.api, { method: "POST", headers, body: JSON.stringify(buildEnvelope(rec)) });
+      const body = await res.text();
+      let json = null; try { json = JSON.parse(body); } catch (e) {}
+      if (!res.ok) throw new Error("HTTP " + res.status + " " + body.slice(0, 140));
+      if (json && json.status === "Failure") throw new Error("Endpoint answered Failure");
+      rec.status = "sent";
+      rec.dirty = false;
+      rec.error = uploadErr ? "photo upload failed: " + uploadErr.message : "";
+      rec.echo = json && typeof json === "object" ? json : null;
+    } catch (e) { rec.status = "failed"; rec.error = e.message || String(e); }
+  } else {
+    rec.status = uploadErr ? "failed" : "local";
+    rec.error = uploadErr ? "photo upload failed: " + uploadErr.message : "";
+  }
+  await putRecord(rec);
+  if (!quiet) finishDone(rec);
+}
+
+/* the wireframes' step 9: server echoes what it resolved, operator ACKs */
+function renderEcho(echo) {
+  const box = $("doneEcho");
+  box.textContent = ""; box.hidden = true;
+  if (!echo || typeof echo !== "object") return;
+  const pick = (...ks) => { for (const k of ks) if (echo[k] != null && echo[k] !== "") return String(echo[k]); return ""; };
+  const rows = [
+    ["Store ID", pick("storeId", "store_id", "StoreID")],
+    ["Asset", pick("assetName", "asset_name", "assetId", "asset_id", "AssetID")],
+    ["Record", pick("recordId", "record_id", "id", "uniqueId")],
+    ["Message", pick("message", "msg", "status")]
+  ].filter((r) => r[1]);
+  if (!rows.length) return;
+  rows.forEach(([k, v]) => ledgerRow(box, k, v, "wide"));
+  box.hidden = false;
+}
+
+async function finishDone(rec) {
+  await go("done");
+  const failed = rec.status === "failed";
+  $("doneStamp").className = "stamp " + (failed ? "err" : "ok");
+  $("doneStamp").textContent = failed ? "!" : "✓";
+  $("doneTitle").textContent = failed ? "Saved, not sent" : rec.status === "sent" ? "Logged and sent" : "Logged";
+  $("doneBody").textContent = failed
+    ? rec.error + " — the capture is safe on this device; send it later from the log."
+    : rec.status === "sent" ? "Endpoint accepted the capture." + (rec.error ? " " + rec.error : "")
+    : "Held on this device as an event in this unit's history.";
+  renderEcho(rec.echo);
+  dock({ rows: [
+    [{ label: "Scan next unit", kind: "primary", on: () => { resetWorkflow(); go("scan"); } }],
+    [{ label: "Unit history", kind: "ghost", on: () => { app.currentUnit = rec.code; go("unit"); } }, { label: "Home", kind: "ghost", on: () => go("home") }]
+  ] });
+}
+
+/* ══ RECORDS: events · units · map ═══════════════════════════════════════ */
+const thumbUrls = [];
+function clearThumbs() { while (thumbUrls.length) URL.revokeObjectURL(thumbUrls.pop()); }
+function thumbUrl(blob) { const u = URL.createObjectURL(blob); thumbUrls.push(u); return u; }
+
+function recRow(r, onClick) {
+  const b = el("button", "rec");
+  const th = el("div", "thumb");
+  const ph = photosOf(r);
+  if (ph.length) { th.style.backgroundImage = `url("${thumbUrl(ph[0])}")`; if (ph.length > 1) th.appendChild(el("span", "more", "+" + (ph.length - 1))); }
+  else th.textContent = "NO IMG";
+  const body = el("div", "body");
+  body.appendChild(el("div", "code", r.code));
+  const bits = [humanStamp(new Date(r.capturedAt))];
+  bits.push(r.lat != null ? `${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}` : r.storeId ? r.storeId : "no fix");
+  if (r.userName) bits.push(r.userName.split(/\s+/)[0]);
+  body.appendChild(el("div", "meta", bits.join("  ·  ")));
+  const flag = el("span", "flag", r.status === "sent" ? "SENT" : r.status === "failed" ? "FAILED" : "LOCAL");
+  flag.dataset.s = r.status;
+  b.append(th, body, flag);
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+async function enterRecords() {
+  clearThumbs();
+  maps.kill(app.logMap); app.logMap = null;
+  const rows = await allRecords();
+  const tabs = $("s-records").querySelectorAll('[role="tab"]');
+  tabs.forEach((t) => { t.setAttribute("aria-selected", String(t.dataset.tab === app.recTab)); t.onclick = () => { app.recTab = t.dataset.tab; enterRecords(); }; });
+  const body = $("recBody");
+  body.textContent = "";
+
+  const unsent = rows.filter((r) => r.status !== "sent" || r.dirty);
+  if (app.recTab === "events") {
+    $("recCount").textContent = `${rows.length} event${rows.length === 1 ? "" : "s"}`;
+    if (!rows.length) body.appendChild(el("div", "empty", "Nothing captured yet. Scans you log collect here, on this phone."));
+    rows.forEach((r) => body.appendChild(recRow(r, () => { app.current = r; go("detail"); })));
+  } else if (app.recTab === "units") {
+    const byCode = new Map();
+    rows.forEach((r) => { if (!byCode.has(r.code)) byCode.set(r.code, []); byCode.get(r.code).push(r); });
+    $("recCount").textContent = `${byCode.size} unit${byCode.size === 1 ? "" : "s"}`;
+    if (!byCode.size) body.appendChild(el("div", "empty", "No units yet."));
+    [...byCode.entries()].forEach(([code, evs]) => {
+      const last = evs[0];
+      const b = el("button", "rec");
+      const th = el("div", "thumb");
+      const ph = photosOf(last);
+      if (ph.length) th.style.backgroundImage = `url("${thumbUrl(ph[0])}")`; else th.textContent = "NO IMG";
+      const bd = el("div", "body");
+      bd.appendChild(el("div", "code", code));
+      const where = [last.retailer, last.storeId].filter(Boolean).join(" ") || (last.lat != null ? `${last.lat.toFixed(4)}, ${last.lon.toFixed(4)}` : "no fix");
+      bd.appendChild(el("div", "meta", `last ${humanStamp(new Date(last.capturedAt))}  ·  ${where}`));
+      const c = el("div", "count");
+      c.appendChild(el("b", null, String(evs.length)));
+      c.appendChild(document.createTextNode(evs.length === 1 ? "event" : "events"));
+      b.append(th, bd, c);
+      b.addEventListener("click", () => { app.currentUnit = code; go("unit"); });
+      body.appendChild(b);
+    });
+  } else {
+    const pts = rows.filter((r) => r.lat != null);
+    $("recCount").textContent = `${pts.length} pinned`;
+    if (!maps.ok()) {
+      body.appendChild(el("div", "empty", typeof L === "undefined" ? "Map library did not load." : "Map tiles are not reachable from this host. Open the standalone file on an HTTPS origin to see the map."));
+    } else if (!pts.length) {
+      body.appendChild(el("div", "empty", "No captures carry a position yet."));
+    } else {
+      const box = el("div", "mapbox");
+      box.style.margin = "12px " + "var(--pad)"; box.style.width = "auto"; box.style.aspectRatio = "auto"; box.style.height = "58vh";
+      body.appendChild(box);
+      const m = maps.make(box, [pts[0].lat, pts[0].lon], 15);
+      m.on("blocked", () => { enterRecords(); });
+      const group = [];
+      const byCode = new Map();
+      pts.forEach((r) => { if (!byCode.has(r.code)) byCode.set(r.code, r); });   /* latest per unit */
+      byCode.forEach((r) => {
+        const mk = L.marker([r.lat, r.lon], { icon: pinIcon(true), keyboard: false }).addTo(m);
+        mk.on("click", () => { app.currentUnit = r.code; go("unit"); });
+        group.push([r.lat, r.lon]);
+      });
+      if (group.length > 1) m.fitBounds(group, { padding: [24, 24], maxZoom: 17 });
+      app.logMap = m;
+      setTimeout(() => m.invalidateSize(), 50);
+      const hint = el("div", "empty", `${byCode.size} unit${byCode.size === 1 ? "" : "s"} at latest known position · tap a pin for history`);
+      hint.style.padding = "8px var(--pad)";
+      body.appendChild(hint);
+    }
+  }
+
+  const rowsSpec = [[{ label: "New scan", kind: "primary", on: () => { resetWorkflow(); go("scan"); } }]];
+  const second = [];
+  if (settings.api && unsent.length) second.push({ label: `Send ${unsent.length} unsent`, kind: "ghost", on: () => sendAll(unsent) });
+  second.push({ label: "Export", kind: "ghost", on: () => exportData("csv") });
+  second.push({ label: "Home", kind: "ghost", on: () => go("home") });
+  rowsSpec.push(second);
+  dock({ rows: rowsSpec });
+}
+
+async function sendAll(list) {
+  await go("sending");
+  dock(null);
+  let ok = 0, fail = 0;
+  for (let i = 0; i < list.length; i++) {
+    $("sendTitle").textContent = `Sending ${i + 1} of ${list.length}`;
+    const r = list[i];
+    await send(r, true);
+    if (r.status === "sent") ok++; else fail++;
+  }
+  toast(`${ok} sent${fail ? `, ${fail} failed` : ""}.`);
+  go("records");
+}
+
+/* ══ UNIT HISTORY (chain of custody) ═════════════════════════════════════ */
+async function enterUnit() {
+  clearThumbs();
+  const code = app.currentUnit;
+  const evs = (await allRecords()).filter((r) => r.code === code);
+  $("unitCode").textContent = code;
+  const L_ = $("unitLedger");
+  L_.textContent = "";
+  /* a serial that arrived by lookup-scan keeps its symbology; otherwise it is keyed */
+  const startCapture = () => {
+    const fmt = app.scanMode === "lookup" && app.code === code && app.format ? app.format : "MANUAL";
+    resetWorkflow();
+    app.scanMode = "capture"; app.payload = parsePayload(code); app.code = code; app.format = fmt; app.readAt = new Date();
+    go("scanned");
+  };
+  if (!evs.length) {
+    ledgerRow(L_, "Events", "0");
+    const tl0 = $("unitTl");
+    tl0.textContent = "";
+    tl0.appendChild(el("div", "empty", "This unit has not been captured on this phone. If it should be in the record, capture it now — the serial carries over."));
+    dock({ rows: [
+      [{ label: "Capture this unit", kind: "primary", on: startCapture }],
+      [{ label: "Look up", kind: "ghost", on: () => go("lookup") }, { label: "Home", kind: "ghost", on: () => go("home") }]
+    ] });
+    return;
+  }
+  const first = evs[evs.length - 1], last = evs[0];
+  ledgerRow(L_, "Events", String(evs.length));
+  ledgerRow(L_, "First seen", humanDate(new Date(first.capturedAt)));
+  ledgerRow(L_, "Last seen", humanDate(new Date(last.capturedAt)));
+  if (last.lat != null) { ledgerRow(L_, "Latest position", `${f8(last.lat)}, ${f8(last.lon)}`, "wide"); }
+  if (last.displayType) ledgerRow(L_, "Display type", last.displayType);
+  const sites = [...new Set(evs.map((r) => [r.retailer, r.storeId].filter(Boolean).join(" ")).filter(Boolean))];
+  if (sites.length) ledgerRow(L_, sites.length > 1 ? "Sites" : "Site", sites.join(" → "), "wide");
+  const people = [...new Set(evs.map((r) => r.userName).filter(Boolean))];
+  if (people.length) ledgerRow(L_, "Captured by", people.join(", "), "wide");
+
+  /* movement between consecutive fixes is the custody signal */
+  const tl = $("unitTl");
+  tl.textContent = "";
+  evs.forEach((r, i) => {
+    const ev = el("div", "ev");
+    const sp = el("div", "spine"); sp.appendChild(el("i"));
+    const card = el("button", "card");
+    card.appendChild(el("div", "when", humanDate(new Date(r.capturedAt)) + (r.status === "sent" ? "  ·  sent" : r.status === "failed" ? "  ·  send failed" : "")));
+    const whereBits = [];
+    if (r.retailer || r.storeId) whereBits.push([r.retailer, r.storeId].filter(Boolean).join(" "));
+    if (r.lat != null) whereBits.push(`${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}` + (r.acc != null ? ` ±${r.acc} m` : "") + (r.locSource && r.locSource !== "gps" ? " (adjusted)" : ""));
+    const prev = evs[i + 1];
+    if (prev && r.lat != null && prev.lat != null) {
+      const dm = haversine(prev.lat, prev.lon, r.lat, r.lon);
+      const tol = (r.acc || 0) + (prev.acc || 0);
+      whereBits.push(dm > Math.max(tol, 30) ? `moved ${dm >= 1000 ? (dm / 1000).toFixed(1) + " km" : Math.round(dm) + " m"} since previous` : "same place as previous");
+    }
+    card.appendChild(el("div", "where", whereBits.join("  ·  ") || "no position"));
+    const who = [r.userName, r.vendor].filter(Boolean).join(" · ");
+    const ph = photosOf(r).length;
+    const na = (r.annotations || []).length;
+    card.appendChild(el("div", "who", [who, ph ? `${ph} photo${ph > 1 ? "s" : ""}` : "", na ? `${na} added note${na > 1 ? "s" : ""}` : "", r.notes ? "“" + r.notes.slice(0, 80) + (r.notes.length > 80 ? "…" : "") + "”" : ""].filter(Boolean).join("  ·  ")));
+    card.addEventListener("click", () => { app.current = r; go("detail"); });
+    ev.append(sp, card);
+    tl.appendChild(ev);
+  });
+
+  dock({ rows: [
+    [{ label: "Capture this unit again", kind: "primary", on: startCapture }],
+    [{ label: "Back to log", kind: "ghost", on: () => go("records") }, { label: "Home", kind: "ghost", on: () => go("home") }]
+  ] });
+}
+function haversine(a1, o1, a2, o2) {
+  const R = 6371000, r = Math.PI / 180;
+  const dA = (a2 - a1) * r, dO = (o2 - o1) * r;
+  const h = Math.sin(dA / 2) ** 2 + Math.cos(a1 * r) * Math.cos(a2 * r) * Math.sin(dO / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+/* ══ DETAIL ══════════════════════════════════════════════════════════════ */
+async function enterDetail() {
+  const r = app.current, b = $("detailBody");
+  b.textContent = "";
+  if (!r) { b.appendChild(el("div", "empty", "Record not found.")); return; }
+  b.appendChild(el("div", "eyebrow", "Capture event " + r.id.slice(0, 8)));
+  b.appendChild(el("div", "serial", r.code));
+
+  const ph = photosOf(r);
+  if (ph.length) {
+    const g = el("div", "plates");
+    ph.forEach((blob, i) => {
+      const u = thumbUrl(blob);
+      const p = el("button", "p"); p.style.backgroundImage = `url("${u}")`; p.setAttribute("aria-pressed", "true");
+      p.appendChild(el("span", "n", String(i + 1)));
+      p.addEventListener("click", () => lightbox(u));
+      g.appendChild(p);
+    });
+    b.appendChild(g);
+  }
+
+  const L_ = el("div", "ledger");
+  const d = new Date(r.capturedAt);
+  ledgerRow(L_, "Symbology", fmtLabel(r.format));
+  ledgerRow(L_, "Latitude", r.lat != null ? f8(r.lat) + "°" : "not captured");
+  ledgerRow(L_, "Longitude", r.lon != null ? f8(r.lon) + "°" : "not captured");
+  const a = ledgerRow(L_, "Accuracy", r.acc != null ? "±" + r.acc + " m" : r.lat != null ? "n/a (adjusted)" : "none");
+  a.className = "v acc"; a.dataset.q = r.acc != null ? accQuality(r.acc) : "poor";
+  if (r.locSource) ledgerRow(L_, "Position source", srcLabel(r.locSource));
+  if (r.addr && addrLine(r.addr)) ledgerRow(L_, "Address", addrLine(r.addr) + (r.addr.country ? ", " + r.addr.country : ""), "wide");
+  ledgerRow(L_, "Local time", localStamp(d));
+  ledgerRow(L_, "UTC", utcStamp(d));
+  ledgerRow(L_, "Time zone", tzAbbrev(d));
+  if (r.userName || r.userId) ledgerRow(L_, "Captured by", [r.userName, r.userId].filter(Boolean).join(" · "), "wide");
+  if (r.vendor) ledgerRow(L_, "Vendor", r.vendor);
+  if (r.retailer) ledgerRow(L_, "Retailer", r.retailer);
+  if (r.storeId) ledgerRow(L_, "Store ID", r.storeId);
+  if (r.displayType) ledgerRow(L_, "Display type", r.displayType);
+  if (r.notes) ledgerRow(L_, "Notes", r.notes, "wide");
+  ledgerRow(L_, "Status", r.status.toUpperCase());
+  (r.imageLocs || []).forEach((u, i) => ledgerRow(L_, `Image ${i + 1}`, u, "wide"));
+  if (r.error) ledgerRow(L_, "Last error", r.error, "wide");
+  b.appendChild(L_);
+
+  /* later notes are appended, never edited — the record is evidence */
+  const anns = r.annotations || [];
+  const ah = el("div", "section-head inset");
+  ah.appendChild(el("div", "eyebrow", "Added notes"));
+  ah.appendChild(el("span", "n", anns.length ? String(anns.length) : "none yet"));
+  b.appendChild(ah);
+  if (anns.length) {
+    const AL = el("div", "ledger");
+    anns.forEach((a) => {
+      const v = ledgerRow(AL, humanStamp(new Date(a.at)), a.text, "wide");
+      const by = el("small", null, "  — " + (a.by || "unknown"));
+      v.appendChild(by);
+    });
+    b.appendChild(AL);
+  }
+  const nf = el("div", "field"); nf.style.marginTop = "14px";
+  const lab = el("label", null, "Add a note"); lab.htmlFor = "annText";
+  const ta = el("textarea"); ta.id = "annText"; ta.placeholder = "What did you find, change, or need someone to know?";
+  const save = el("button", "btn slim", "Add note");
+  save.addEventListener("click", async () => {
+    const text = ta.value.trim();
+    if (!text) { toast("Nothing to add."); return; }
+    r.annotations = r.annotations || [];
+    r.annotations.push({ at: Date.now(), by: identity ? `${identity.name} <${identity.email}>` : "", text });
+    r.dirty = true;                                 /* the endpoint has not seen this note */
+    await putRecord(r);
+    toast("Note added" + (settings.api ? " — resend to update the endpoint." : "."));
+    enterDetail();
+  });
+  nf.append(lab, ta, save);
+  b.appendChild(nf);
+
+  if (r.echo) {
+    const n = el("div", "note quiet");
+    n.appendChild(el("b", null, "Endpoint reply. "));
+    n.appendChild(document.createTextNode(JSON.stringify(r.echo).slice(0, 300)));
+    b.appendChild(n);
+  }
+  if (r.lat != null) {
+    const n = el("div", "note");
+    const link = el("a", null, "Open in Maps");
+    link.href = `https://maps.apple.com/?q=${encodeURIComponent(r.code)}&ll=${r.lat},${r.lon}`; link.target = "_blank"; link.rel = "noopener";
+    n.appendChild(link);
+    n.appendChild(document.createTextNode(" — or copy the pair: "));
+    n.appendChild(el("code", null, `${f8(r.lat)}, ${f8(r.lon)}`));
+    b.appendChild(n);
+  }
+
+  const rows = [];
+  if (settings.api && (r.status !== "sent" || r.dirty)) rows.push([{ label: r.dirty && r.status === "sent" ? "Resend with new notes" : "Send now", kind: "primary", on: async () => { await go("sending"); $("sendTitle").textContent = "Sending"; $("sendStep").textContent = "Posting capture…"; dock(null); await send(r); } }]);
+  rows.push([
+    { label: "History", kind: "ghost", on: () => { app.currentUnit = r.code; go("unit"); } },
+    { label: "Copy JSON", kind: "ghost", on: () => copyText(JSON.stringify(buildEnvelope(r), null, 2)) },
+    { label: "Delete", kind: "danger", on: async () => { if (!confirm("Delete this capture event and its photos?")) return; await delRecord(r.id); app.current = null; toast("Event deleted."); go("records"); } }
+  ]);
+  rows.push([{ label: "Back", kind: "ghost", on: () => go("records") }]);
+  dock({ rows });
+}
+
+/* ══ SETTINGS ════════════════════════════════════════════════════════════ */
+async function enterSettings() {
+  $("setApi").value = settings.api; $("setKey").value = settings.key;
+  $("setUpload").value = settings.upload; $("setPattern").value = settings.pattern;
+  renderWho($("setWho"));
+  const bits = [];
+  bits.push(native ? `shell: Capacitor · ${native.platform}` : "shell: browser");
+  bits.push(window.isSecureContext || native ? "secure origin ✓" : "INSECURE ORIGIN — camera and GPS will be refused");
+  bits.push("decoder: " + (decoder.strategy || (decoder.ready ? "unavailable" : "not yet probed")));
+  bits.push("map: " + (typeof L === "undefined" ? "library missing" : maps.blocked ? "tiles blocked here" : "ready"));
+  bits.push(navigator.mediaDevices ? "camera API ✓" : "no camera API");
+  bits.push(navigator.geolocation ? "geolocation API ✓" : "no geolocation API");
+  $("diag").textContent = bits.join(" · ");
+
+  $("btnSignout").onclick = () => {
+    if (!confirm("Sign out? Records stay on this phone; the next person signs in with their own identity.")) return;
+    identity = null; try { localStorage.removeItem(IKEY); } catch (e) {}
+    geo.stop();
+    go("signin");
+  };
+
+  dock({ rows: [
+    [{ label: "Save settings", kind: "primary", on: () => {
+      settings.api = $("setApi").value.trim(); settings.key = $("setKey").value.trim();
+      settings.upload = $("setUpload").value.trim(); settings.pattern = $("setPattern").value.trim();
+      if (settings.pattern) { try { new RegExp(settings.pattern); } catch (e) { toast("That serial pattern is not a valid regular expression."); return; } }
+      persist(SKEY, settings);
+      toast("Settings saved.");
+      go("home");
+    } }],
+    [{ label: "Back", kind: "ghost", on: () => go("home") }]
+  ] });
+}
+
+/* ── export / clipboard ──────────────────────────────────────────────── */
+const csvEsc = (v) => { const s = v == null ? "" : String(v); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+function toCsv(rows) {
+  const cols = ["id","serial","format","capturedAtLocal","capturedAtUtc","timeZone","latitude","longitude","accuracyMeters","positionSource","address","city","state","postalCode","country",
+                "userId","userName","vendor","retailer","storeId","displayType","notes","addedNotes","photoCount","imageLocs","status","error"];
+  const lines = [cols.join(",")];
+  rows.forEach((r) => {
+    const d = new Date(r.capturedAt), a = r.addr || {};
+    const added = (r.annotations || []).map((x) => `[${utcStamp(new Date(x.at))} ${x.by}] ${x.text}`).join(" | ");
+    lines.push([r.id, r.code, r.format, localStamp(d), utcStamp(d), tzAbbrev(d), r.lat, r.lon, r.acc, r.locSource, a.address, a.city, a.subdivision1, a.postalCode, a.country,
+      r.userId, r.userName, r.vendor, r.retailer, r.storeId, r.displayType, r.notes, added, photosOf(r).length, (r.imageLocs || []).join(" "), r.status, r.error].map(csvEsc).join(","));
+  });
+  return lines.join("\r\n");
+}
+/* the BSN handoff shape: one row per serial, latest known position */
+function toUnitsCsv(rows) {
+  const byCode = new Map();
+  rows.forEach((r) => { if (!byCode.has(r.code)) byCode.set(r.code, r); });
+  const lines = ["serial,latitude,longitude,accuracyMeters,lastSeenUtc,retailer,storeId,displayType,vendor,events"];
+  byCode.forEach((r, code) => {
+    const n = rows.filter((x) => x.code === code).length;
+    lines.push([code, r.lat, r.lon, r.acc, utcStamp(new Date(r.capturedAt)), r.retailer, r.storeId, r.displayType, r.vendor, n].map(csvEsc).join(","));
+  });
+  return lines.join("\r\n");
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast("Copied to the clipboard."); return true; }
+  catch (e) {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    let ok = false; try { ok = document.execCommand("copy"); } catch (e2) {}
+    ta.remove();
+    toast(ok ? "Copied to the clipboard." : "Could not reach the clipboard.");
+    return ok;
+  }
+}
+
+async function exportData(kind) {
+  const rows = await allRecords();
+  if (!rows.length) { toast("Nothing to export yet."); return; }
+  const text = kind === "csv" ? toCsv(rows) : kind === "units" ? toUnitsCsv(rows) : JSON.stringify(rows.map(buildEnvelope), null, 2);
+  const ext = kind === "json" ? "json" : "csv";
+  const name = `geobarcode-${kind}-${new Date().toISOString().slice(0, 10)}.${ext}`;
+  /* in the Capacitor shell: write to the app cache and hand the file to the
+     native share sheet — WKWebView has no Web Share API */
+  if (native && native.Share && native.Filesystem) {
+    try {
+      const w = await native.Filesystem.writeFile({ path: name, data: text, directory: "CACHE", encoding: "utf8" });
+      await native.Share.share({ title: name, files: [w.uri] });
+      return;
+    } catch (e) { if (e && /cancel/i.test(e.message || "")) return; /* else fall through to clipboard */ }
+  }
+  const file = new File([text], name, { type: ext === "csv" ? "text/csv" : "application/json" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); return; }
+    catch (e) { if (e && e.name === "AbortError") return; }
+  }
+  await copyText(text);
+}
+
+/* ── wiring ──────────────────────────────────────────────────────────── */
+const ENTER = {
+  signin: enterSignin, home: enterHome, lookup: enterLookup, location: enterLocation, scan: enterScan, scanned: enterScanned, photo: enterPhoto, photos: enterPhotos,
+  fix: enterFix, confirm: enterConfirm, records: enterRecords, unit: enterUnit, detail: enterDetail, settings: enterSettings,
+  sending: async () => {}, done: async () => {}
+};
+
+/* The wordmark is the home button. Mid-capture it asks first — going home
+   resets the workflow, and a half-finished capture is real work. */
+const MIDWAY = new Set(["scanned","photo","photos","fix","confirm"]);
+$("btnHome").addEventListener("click", () => {
+  if (!identity) return;
+  if (app.screen === "home") { $("s-home").scrollTop = 0; return; }
+  if (MIDWAY.has(app.screen) && app.scanMode === "capture" && !confirm("Leave this capture? It has not been logged and will be discarded.")) return;
+  go("home");
+});
+$("gpsChip").addEventListener("click", () => {
+  if (!identity) return;
+  if (app.screen === "location") return;
+  const noReturn = new Set(["sending", "done", "signin", "location"]);
+  app.locReturn = noReturn.has(app.screen) ? "home" : app.screen;   /* Done takes you back where you were */
+  go("location");
+});
+$("btnRecords").addEventListener("click", () => { if (identity) go("records"); });
+$("btnSettings").addEventListener("click", () => { if (identity) go("settings"); });
+$("btnExportCsv").addEventListener("click", () => exportData("csv"));
+$("btnExportUnits").addEventListener("click", () => exportData("units"));
+$("btnExportJson").addEventListener("click", () => exportData("json"));
+$("btnWipe").addEventListener("click", async () => {
+  if (!confirm("Delete every capture event and photo held on this device? This cannot be undone.")) return;
+  await wipeStore(); clearThumbs(); toast("All records deleted."); go("home");
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && CAM_SCREENS.has(app.screen)) { stopScanLoop(); cam.close(); }
+  else if (!document.hidden && app.screen === "scan") enterScan();
+  else if (!document.hidden && app.screen === "photo") enterPhoto();
+});
+
+/* native shell niceties: dark status bar, hardware back button (Android) */
+if (native) {
+  if (native.StatusBar) {
+    native.StatusBar.setStyle({ style: "DARK" }).catch(() => {});
+    if (native.platform === "android") native.StatusBar.setBackgroundColor({ color: "#0B0F14" }).catch(() => {});
+  }
+  if (native.App && native.App.addListener) {
+    native.App.addListener("backButton", () => {
+      if (app.screen === "home" || app.screen === "signin") { native.App.exitApp && native.App.exitApp(); return; }
+      if (MIDWAY.has(app.screen) && app.scanMode === "capture" && !confirm("Leave this capture? It will be discarded.")) return;
+      go(app.screen === "detail" ? "records" : app.screen === "unit" ? "records" : "home");
+    });
+  }
+  document.documentElement.classList.add("native");
+}
+
+setGpsChip("idle", "Location");
+if (!window.isSecureContext && !native) setGpsChip("fail", "No HTTPS");
+go(identity ? "home" : "signin");
+</script>
+
+</body>
+</html>
