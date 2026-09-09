@@ -507,6 +507,13 @@ svg.leaflet-zoom-animated{will-change:transform}
 .field input[aria-invalid="true"] { border-color: var(--bad); }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .two .field { margin-bottom: 0; }
+.field select {
+  font-family: var(--mono); font-size: 15px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--hairline); border-radius: 10px;
+  padding: 12px 13px; width: 100%; -webkit-appearance: none; appearance: none;
+}
+.check { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2); margin: 4px 0 6px; }
+.check input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
 
 .coords { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
 .coords .field { margin-bottom: 0; }
@@ -974,6 +981,38 @@ details.opt[open] summary::after { content: "–"; }
           <span class="help">Scans that do not match are flagged, not blocked — the label is the truth, the pattern is a tripwire.</span>
         </div>
 
+        <div class="section-head inset"><div class="eyebrow">BSN.cloud · direct mode</div><span class="n" id="bsnState"></span></div>
+        <div class="note" style="margin-top:14px">
+          <b>Personal credential — not for shared phones.</b> Each logged capture looks the serial up in your network and writes the fix to the player's <code>settings.location</code> (GPS latitude/longitude plus the resolved country, state, county and city). Create the Application in the Admin Panel with only the device <em>retrieve</em> and <em>update</em> scopes. The secret stays on this phone.
+        </div>
+        <div class="field">
+          <label for="setBsnClient">Client ID</label>
+          <input id="setBsnClient" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Admin Panel → Settings → Applications">
+        </div>
+        <div class="field">
+          <label for="setBsnSecret">Client secret</label>
+          <input id="setBsnSecret" type="password" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off" placeholder="paste once">
+          <span class="help" id="setBsnSecretHelp"></span>
+        </div>
+        <div class="field">
+          <label for="setBsnNetwork">Network</label>
+          <input id="setBsnNetwork" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="network name or numeric ID">
+        </div>
+        <div class="field">
+          <label for="setBsnMode">Keep the secret</label>
+          <select id="setBsnMode">
+            <option value="session">Until this browser tab closes</option>
+            <option value="encrypted">On this phone, encrypted with a passphrase</option>
+          </select>
+          <span class="help">Access tokens last 5½ minutes and BSN.cloud issues no refresh tokens, so the secret must be available for the whole visit. Neither option ever writes it in the clear.</span>
+        </div>
+        <label class="check"><input type="checkbox" id="setBsnEnabled"> Update the player's location on every logged capture</label>
+        <div style="display:flex; gap:8px; margin-top:8px">
+          <button class="btn slim" id="btnBsnTest" style="flex:1">Test connection</button>
+          <button class="btn danger slim" id="btnBsnForget" style="flex:1">Forget secret</button>
+        </div>
+        <div class="note quiet" id="bsnTestOut" hidden></div>
+
         <div class="section-head inset"><div class="eyebrow">Identity</div></div>
         <div class="who-line" id="setWho"></div>
         <div style="display:flex; flex-direction:column; gap:8px; margin-top:12px">
@@ -1074,7 +1113,7 @@ const initials = (name) => (name || "?").split(/\s+/).filter(Boolean).slice(0, 2
 
 /* ── settings, identity, sticky site context (localStorage) ──────────── */
 const SKEY = "geobarcode.settings.v2", IKEY = "geobarcode.identity.v1", CKEY = "geobarcode.context.v1";
-let settings = { api: "", key: "", upload: "", pattern: "" };
+let settings = { api: "", key: "", upload: "", pattern: "", bsnClientId: "", bsnNetwork: "", bsnMode: "session", bsnEnabled: false };
 let identity = null;                       /* {name, email, org} */
 let context  = { storeId: "", retailer: "" };   /* remembered between units at one site */
 try { Object.assign(settings, JSON.parse(localStorage.getItem(SKEY) || "{}")); } catch (e) {}
@@ -1370,10 +1409,187 @@ function addrFields(a) {
     city: a.city || a.town || a.village || a.hamlet || a.municipality || "",
     subdivision1: a.state || "", subdivision2: a.county || "",
     postalCode: a.postcode || "", country: a.country || "",
-    countryiso2: (a.country_code || "").toUpperCase(), countryiso3: ""
+    countryiso2: (a.country_code || "").toUpperCase(), countryiso3: "",
+    /* ISO 3166-2 code for the state/province ("US-MA" → "MA"), as BSN.cloud's adminAreaLevel1 expects */
+    subdivision1Code: String(a["ISO3166-2-lvl4"] || a["ISO3166-2-lvl3"] || a["ISO3166-2-lvl6"] || "").split("-").pop()
   };
 }
 const addrLine = (f) => f ? [f.address, f.city, f.subdivision1, f.postalCode].filter(Boolean).join(", ") : "";
+
+/* ── BSN.cloud direct mode (personal client credential) ───────────────────
+   OAuth2 client-credentials against BrightSign's Keycloak realm, then the
+   2022/06 main API: GET /Devices/{serial}/ to find the player, PATCH
+   /Devices/{id}/ to replace settings.location. Access tokens live ~5½ min
+   and there are no refresh tokens, so a 401 re-exchanges the secret; the
+   network selection is a 24 h server-side session, re-asserted per token.
+   The secret never leaves this phone: sessionStorage for the tab, or
+   AES-GCM under a passphrase (PBKDF2) when the operator asks to keep it.  */
+const BSN = {
+  auth: "https://auth.bsn.cloud/realms/bsncloud/protocol/openid-connect/token",
+  api: "https://api.bsn.cloud/2022/06/REST",
+  SEC_SESSION: "geobarcode.bsn.secret.session", SEC_ENC: "geobarcode.bsn.secret.enc"
+};
+const cryptoBox = {
+  async key(pass, salt) {
+    const km = await crypto.subtle.importKey("raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
+    return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 250000, hash: "SHA-256" }, km, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  },
+  b64(u8) { let s = ""; u8.forEach((b) => { s += String.fromCharCode(b); }); return btoa(s); },
+  unb64(s) { return Uint8Array.from(atob(s), (c) => c.charCodeAt(0)); },
+  async seal(text, pass) {
+    const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await this.key(pass, salt), new TextEncoder().encode(text)));
+    return [this.b64(salt), this.b64(iv), this.b64(ct)].join(".");
+  },
+  async open(blob, pass) {
+    const [s, i, c] = blob.split(".").map((x) => this.unb64(x));
+    return new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: i }, await this.key(pass, s), c));
+  }
+};
+const bsn = {
+  secret: null, token: null, tokenExp: 0, scopes: "", netAt: 0,
+  configured() { return !!(settings.bsnClientId && settings.bsnNetwork); },
+  enabled() { return this.configured() && !!settings.bsnEnabled; },
+  hasSecret() {
+    if (this.secret) return true;
+    try { return !!(sessionStorage.getItem(BSN.SEC_SESSION) || localStorage.getItem(BSN.SEC_ENC)); } catch (e) { return false; }
+  },
+  secretState() {
+    if (this.secret || (() => { try { return sessionStorage.getItem(BSN.SEC_SESSION); } catch (e) { return null; } })()) return "unlocked for this tab";
+    try { if (localStorage.getItem(BSN.SEC_ENC)) return "stored encrypted — locked"; } catch (e) {}
+    return "not on this phone";
+  },
+  async getSecret(interactive) {
+    if (this.secret) return this.secret;
+    try { const s = sessionStorage.getItem(BSN.SEC_SESSION); if (s) return (this.secret = s); } catch (e) {}
+    let enc = null; try { enc = localStorage.getItem(BSN.SEC_ENC); } catch (e) {}
+    if (!enc) throw new Error("no client secret on this phone — paste it in Settings");
+    if (!interactive) throw new Error("client secret is locked — unlock it in Settings");
+    const pass = window.prompt("Passphrase to unlock the BSN.cloud client secret on this phone:");
+    if (pass == null) throw new Error("unlock cancelled");
+    try { this.secret = await cryptoBox.open(enc, pass); } catch (e) { throw new Error("wrong passphrase"); }
+    try { sessionStorage.setItem(BSN.SEC_SESSION, this.secret); } catch (e) {}
+    return this.secret;
+  },
+  async setSecret(secret, mode, pass) {
+    this.secret = secret; this.token = null; this.netAt = 0;
+    try { sessionStorage.setItem(BSN.SEC_SESSION, secret); } catch (e) {}
+    try { localStorage.removeItem(BSN.SEC_ENC); } catch (e) {}
+    if (mode === "encrypted") { const enc = await cryptoBox.seal(secret, pass); try { localStorage.setItem(BSN.SEC_ENC, enc); } catch (e) {} }
+  },
+  forget() {
+    this.secret = null; this.token = null; this.tokenExp = 0; this.netAt = 0; this.scopes = "";
+    try { sessionStorage.removeItem(BSN.SEC_SESSION); } catch (e) {}
+    try { localStorage.removeItem(BSN.SEC_ENC); } catch (e) {}
+  },
+  async getToken(force, interactive) {
+    if (!force && this.token && Date.now() < this.tokenExp - 15000) return this.token;
+    const secret = await this.getSecret(interactive);
+    /* credentials go in the body, not an Authorization header: the header
+       forces a CORS preflight that the token endpoint refuses */
+    const body = new URLSearchParams({ grant_type: "client_credentials", client_id: settings.bsnClientId, client_secret: secret });
+    let res;
+    try { res = await fetch(BSN.auth, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" }, body }); }
+    catch (e) { throw new Error("the sign-in server would not answer this page (CORS) — the Application needs " + location.origin + " as an allowed Web Origin"); }
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(res.status === 401 ? "BSN.cloud rejected the client ID / secret" : "token: HTTP " + res.status + " " + (j.error_description || j.error || ""));
+    this.token = j.access_token; this.tokenExp = Date.now() + (Number(j.expires_in) || 300) * 1000; this.scopes = j.scope || ""; this.netAt = 0;
+    return this.token;
+  },
+  async ensureNetwork(interactive) {
+    const tok = await this.getToken(false, interactive);
+    if (this.netAt && Date.now() - this.netAt < 20 * 3600 * 1000) return tok;
+    const body = /^\d+$/.test(settings.bsnNetwork) ? { id: Number(settings.bsnNetwork) } : { name: settings.bsnNetwork };
+    const res = await fetch(BSN.api + "/Self/Session/Network", { method: "PUT", headers: { Authorization: "Bearer " + tok, "Content-Type": "application/json", Accept: "application/json, application/vnd.bsn.error+json" }, body: JSON.stringify(body) });
+    if (res.status === 400) throw new Error(`network "${settings.bsnNetwork}" does not exist, or this credential cannot see it`);
+    if (res.status === 401) { this.token = null; throw new Error("token expired while selecting the network — try again"); }
+    if (res.status === 403) throw new Error("this credential is not allowed to select a network");
+    if (!res.ok && res.status !== 204) throw new Error("select network: HTTP " + res.status);
+    this.netAt = Date.now();
+    return tok;
+  },
+  /* one API call, with one silent retry on a fresh token */
+  async call(method, path, body, headers, interactive) {
+    let res;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const tok = await this.ensureNetwork(interactive !== false);
+      const h = Object.assign({ Authorization: "Bearer " + tok, Accept: "application/json, application/vnd.bsn.error+json" }, headers || {});
+      res = await fetch(BSN.api + path, { method, headers: h, body: body == null ? undefined : JSON.stringify(body) });
+      if (res.status === 401 && attempt === 0) { this.token = null; this.netAt = 0; continue; }
+      break;
+    }
+    return res;
+  },
+  async findPlayer(serial, interactive) {
+    const res = await this.call("GET", "/Devices/" + encodeURIComponent(serial) + "/", null, null, interactive);
+    if (res.status === 404) return null;
+    if (res.status === 403) throw new Error("credential lacks the devices retrieve scope");
+    if (!res.ok) throw new Error("lookup: HTTP " + res.status);
+    return res.json();
+  },
+  async setLocation(player, loc) {
+    const next = Object.assign({}, (player.settings && player.settings.location) || {}, loc);
+    const res = await this.call("PATCH", "/Devices/" + player.id + "/", [{ op: "replace", path: "/settings/location/", value: next }], { "Content-Type": "application/json-patch+json" });
+    if (res.status === 403) throw new Error("credential lacks the devices update scope");
+    if (res.status === 412) throw new Error("the player changed on the server meanwhile — try again");
+    if (!res.ok && res.status !== 204) { const t = await res.text().catch(() => ""); throw new Error("update: HTTP " + res.status + " " + t.slice(0, 140)); }
+    return next;
+  },
+  async count() {
+    const res = await this.call("GET", "/Devices/Count/");
+    if (!res.ok) throw new Error("count: HTTP " + res.status);
+    const t = (await res.text()).trim(); const n = Number(t); return isFinite(n) ? n : t;
+  }
+};
+/* the capture's fix and resolved address → BSN.cloud's DeviceLocation shape;
+   fields the geocoder did not give are left as the player already has them */
+function bsnLocationFrom(rec) {
+  const loc = { gpsLatitude: rec.lat, gpsLongitude: rec.lon };
+  const a = rec.addr;
+  if (a) {
+    if (a.countryiso2) loc.country = a.countryiso2;
+    if (a.country) loc.countryLongName = a.country;
+    if (a.subdivision1) { loc.adminAreaLevel1 = a.subdivision1Code || a.subdivision1; loc.adminAreaLevel1LongName = a.subdivision1; }
+    if (a.subdivision2) { loc.adminAreaLevel2 = a.subdivision2; loc.adminAreaLevel2LongName = a.subdivision2; }
+    if (a.city) { loc.locality = a.city; loc.localityLongName = a.city; }
+  }
+  return loc;
+}
+async function pushBsn(rec) {
+  if (!bsn.enabled()) return;
+  if (rec.lat == null) { rec.bsn = { status: "skipped", reason: "capture has no position", network: settings.bsnNetwork, at: Date.now() }; return; }
+  $("sendStep").textContent = "Finding the player in BSN.cloud…";
+  try {
+    const p = await bsn.findPlayer(rec.code, true);
+    if (!p) { rec.bsn = { status: "not-found", network: settings.bsnNetwork, at: Date.now() }; return; }
+    const prev = (p.settings && p.settings.location) || null;
+    $("sendStep").textContent = "Writing the player's location…";
+    const next = await bsn.setLocation(p, bsnLocationFrom(rec));
+    rec.bsn = { status: "updated", network: settings.bsnNetwork, deviceId: p.id, name: p.settings && p.settings.name || "", group: (p.settings && p.settings.group && p.settings.group.name) || "",
+      prevLat: prev && prev.gpsLatitude != null ? prev.gpsLatitude : null, prevLon: prev && prev.gpsLongitude != null ? prev.gpsLongitude : null,
+      lat: next.gpsLatitude, lon: next.gpsLongitude, at: Date.now(), error: "" };
+  } catch (e) {
+    rec.bsn = Object.assign({}, rec.bsn || {}, { status: "failed", network: settings.bsnNetwork, error: e.message || String(e), at: Date.now() });
+  }
+}
+/* what still needs to go upstream: the endpoint, the BSN.cloud write, or both */
+const needsSend = (r) => (!!settings.api && (r.status !== "sent" || !!r.dirty)) || (bsn.enabled() && !!r.bsn && (r.bsn.status === "failed" || r.bsn.status === "pending"));
+function renderBsnEcho(rec) {
+  const b = rec.bsn; if (!b) return;
+  const box = $("doneEcho");
+  if (b.status === "updated") {
+    ledgerRow(box, "Player", [b.name, b.group].filter(Boolean).join(" · ") || "id " + b.deviceId, "wide");
+    ledgerRow(box, "Network", b.network);
+    ledgerRow(box, "Location now", `${f8(b.lat)}, ${f8(b.lon)}`, "wide");
+    if (b.prevLat != null) {
+      const dm = haversine(b.prevLat, b.prevLon, b.lat, b.lon);
+      ledgerRow(box, "Was", `${f8(b.prevLat)}, ${f8(b.prevLon)} · moved ${dm >= 1000 ? (dm / 1000).toFixed(1) + " km" : Math.round(dm) + " m"}`, "wide");
+    } else ledgerRow(box, "Was", "no position on record");
+  } else if (b.status === "not-found") ledgerRow(box, "BSN.cloud", `serial is not a player in network "${b.network}" — kept on this phone`, "wide");
+  else if (b.status === "failed") ledgerRow(box, "BSN.cloud", "not updated: " + b.error + " — resend from the log", "wide");
+  else if (b.status === "skipped") ledgerRow(box, "BSN.cloud", "not updated: " + b.reason, "wide");
+  box.hidden = false;
+}
 
 /* ── maps: Leaflet + OSM tiles, degrading to fields-only when blocked ── */
 const maps = {
@@ -1472,7 +1688,7 @@ function resetWorkflow() {
   app.code = app.format = app.readAt = app.payload = app.capturedAt = null;
   app.photos.forEach((p) => URL.revokeObjectURL(p.url));
   app.photos = [];
-  app.loc = null; app.locTouched = false; app.locAddr = null;
+  app.loc = null; app.locTouched = false; app.locAddr = null; app.bsnPlayer = null;
   ["cfStore","cfRetailer","cfDisplay","cfNotes"].forEach((id) => { delete $(id).dataset.touched; $(id).value = ""; });
   $("optDetails").open = false;
   decoder.reset();
@@ -1667,7 +1883,7 @@ async function enterHome() {
   const rows = await allRecords();
   const units = new Set(rows.map((r) => r.code)).size;
   const pinned = new Set(rows.filter((r) => r.lat != null).map((r) => r.code)).size;
-  const unsent = rows.filter((r) => r.status !== "sent" || r.dirty).length;
+  const unsent = rows.filter(needsSend).length;
 
   $("homeLede").hidden = rows.length > 0;
   renderSite(false);
@@ -1678,10 +1894,13 @@ async function enterHome() {
   T.appendChild(tile({ icon: "units", title: "Units", sub: `${units} tracked`, on: () => { app.recTab = "units"; go("records"); } }));
   T.appendChild(tile({ icon: "events", title: "Events", sub: `${rows.length} capture${rows.length === 1 ? "" : "s"}`, on: () => { app.recTab = "events"; go("records"); } }));
   T.appendChild(tile({ icon: "map", title: "Map", sub: `${pinned} pinned`, on: () => { app.recTab = "map"; go("records"); } }));
-  if (settings.api) {
+  if (settings.api || bsn.enabled()) {
     T.appendChild(tile({ icon: "send", title: unsent ? "Send unsent" : "All sent", sub: unsent ? `${unsent} waiting` : "endpoint up to date", hot: unsent > 0, quiet: !unsent,
-      disabled: !unsent, on: () => sendAll(rows.filter((r) => r.status !== "sent" || r.dirty)) }));
+      disabled: !unsent, on: () => sendAll(rows.filter(needsSend)) }));
     T.appendChild(tile({ icon: "export", title: "Export", sub: "CSV · JSON", on: () => go("settings"), disabled: !rows.length }));
+  } else if (bsn.configured()) {
+    T.appendChild(tile({ icon: "export", title: "Export", sub: rows.length ? "CSV · JSON" : "nothing to export", on: () => go("settings"), disabled: !rows.length }));
+    T.appendChild(tile({ icon: "settings", title: "BSN.cloud", sub: "direct mode off · turn on", quiet: true, on: () => go("settings") }));
   } else {
     T.appendChild(tile({ icon: "export", title: "Export", sub: rows.length ? "CSV · JSON" : "nothing to export", on: () => go("settings"), disabled: !rows.length }));
     T.appendChild(tile({ icon: "settings", title: "Upstream", sub: "local only · add endpoint", quiet: true, on: () => go("settings") }));
@@ -2027,6 +2246,16 @@ async function enterScanned() {
     if (app.payload.retailer) ledgerRow(L_, "Retailer", app.payload.retailer);
   }
   ledgerRow(L_, "Read at", humanStamp(app.readAt));
+  if (bsn.configured() && bsn.hasSecret()) {
+    const v = ledgerRow(L_, "BSN.cloud", "looking up…");
+    bsn.findPlayer(app.code, false).then((p) => {
+      if (!p) { v.textContent = `not a player in "${settings.bsnNetwork}"`; v.className = "v acc"; v.dataset.q = "poor"; return; }
+      app.bsnPlayer = p;
+      const s = p.settings || {}, loc = s.location;
+      v.textContent = [s.name, s.group && s.group.name].filter(Boolean).join(" · ") || "player " + p.id;
+      ledgerRow(L_, "On record", loc && loc.gpsLatitude != null ? `${f8(loc.gpsLatitude)}, ${f8(loc.gpsLongitude)}` + (loc.locality ? ` · ${loc.locality}` : "") : "no position stored", "wide");
+    }).catch((e) => { v.textContent = "unavailable — " + (e.message || e); });
+  }
 
   /* custody context: has this unit been seen before? */
   const prior = (await allRecords()).filter((r) => r.code === app.code);
@@ -2334,7 +2563,8 @@ function buildEnvelope(rec) {
       userId: rec.userId || "", userName: rec.userName || "", vendor: rec.vendor || "",
       storeId: rec.storeId || "", retailer: rec.retailer || "", displayType: rec.displayType || "",
       notes: rec.notes || "",
-      annotations: (rec.annotations || []).map((a) => ({ time: utcStamp(new Date(a.at)), by: a.by, text: a.text }))
+      annotations: (rec.annotations || []).map((a) => ({ time: utcStamp(new Date(a.at)), by: a.by, text: a.text })),
+      bsn: rec.bsn ? { status: rec.bsn.status, network: rec.bsn.network || "", deviceId: rec.bsn.deviceId || null, playerName: rec.bsn.name || "" } : null
     }
   };
 }
@@ -2408,11 +2638,15 @@ async function saveAndSend(rec) {
     } catch (e) { /* offline or blocked host: the coordinates stand on their own */ }
   }
 
+  if (bsn.enabled()) { await pushBsn(rec); try { await putRecord(rec); } catch (e) {} }
+
   if (!settings.api && !settings.upload) { finishDone(rec); return; }
   await send(rec);
 }
 
 async function send(rec, quiet) {
+  /* a failed BSN.cloud write is retried here too, so "send unsent" covers both channels */
+  if (bsn.enabled() && rec.bsn && (rec.bsn.status === "failed" || rec.bsn.status === "pending")) await pushBsn(rec);
   const photos = photosOf(rec);
   let uploadErr = null;
   if (settings.upload && photos.length) {
@@ -2481,6 +2715,11 @@ async function finishDone(rec) {
     : rec.status === "sent" ? "Endpoint accepted the capture." + (rec.error ? " " + rec.error : "")
     : "Held on this device as an event in this unit's history." + (rec.photosDropped ? ` The ${rec.photosDropped} photo${rec.photosDropped > 1 ? "s" : ""} could not be stored on this phone and ${rec.photosDropped > 1 ? "were" : "was"} left out.` : "");
   renderEcho(rec.echo);
+  const b = rec.bsn;
+  if (b && b.status === "updated") $("doneTitle").textContent += " · BSN.cloud updated";
+  else if (b && b.status === "failed") $("doneTitle").textContent += " · BSN.cloud not updated";
+  else if (b && b.status === "not-found") $("doneTitle").textContent += " · not in network";
+  renderBsnEcho(rec);
   dock({ rows: [
     [{ label: "Scan next unit", kind: "primary", on: () => { resetWorkflow(); go("scan"); } }],
     [{ label: "Unit history", kind: "ghost", on: () => { app.currentUnit = rec.code; go("unit"); } }, { label: "Home", kind: "ghost", on: () => go("home") }]
@@ -2520,7 +2759,7 @@ async function enterRecords() {
   const body = $("recBody");
   body.textContent = "";
 
-  const unsent = rows.filter((r) => r.status !== "sent" || r.dirty);
+  const unsent = rows.filter(needsSend);
   if (app.recTab === "events") {
     $("recCount").textContent = `${rows.length} event${rows.length === 1 ? "" : "s"}`;
     if (!rows.length) body.appendChild(el("div", "empty", "Nothing captured yet. Scans you log collect here, on this phone."));
@@ -2717,6 +2956,11 @@ async function enterDetail() {
   if (r.notes) ledgerRow(L_, "Notes", r.notes, "wide");
   ledgerRow(L_, "Status", r.status.toUpperCase());
   (r.imageLocs || []).forEach((u, i) => ledgerRow(L_, `Image ${i + 1}`, u, "wide"));
+  if (r.bsn) {
+    const b = r.bsn;
+    ledgerRow(L_, "BSN.cloud", b.status === "updated" ? `updated · ${[b.name, b.group].filter(Boolean).join(" · ") || "id " + b.deviceId} · ${b.network} · ${f8(b.lat)}, ${f8(b.lon)}`
+      : b.status === "not-found" ? `not a player in "${b.network}"` : b.status === "failed" ? "failed: " + b.error : b.status + (b.reason ? " — " + b.reason : ""), "wide");
+  }
   if (r.error) ledgerRow(L_, "Last error", r.error, "wide");
   b.appendChild(L_);
 
@@ -2769,7 +3013,7 @@ async function enterDetail() {
   }
 
   const rows = [];
-  if (settings.api && (r.status !== "sent" || r.dirty)) rows.push([{ label: r.dirty && r.status === "sent" ? "Resend with new notes" : "Send now", kind: "primary", on: async () => { await go("sending"); $("sendTitle").textContent = "Sending"; $("sendStep").textContent = "Posting capture…"; dock(null); await send(r); } }]);
+  if (needsSend(r)) rows.push([{ label: r.dirty && r.status === "sent" ? "Resend with new notes" : r.bsn && r.bsn.status === "failed" && !settings.api ? "Retry BSN.cloud" : "Send now", kind: "primary", on: async () => { await go("sending"); $("sendTitle").textContent = "Sending"; $("sendStep").textContent = "Posting capture…"; dock(null); await send(r); } }]);
   rows.push([
     { label: "History", kind: "ghost", on: () => { app.currentUnit = r.code; go("unit"); } },
     { label: "Copy JSON", kind: "ghost", on: () => copyText(JSON.stringify(buildEnvelope(r), null, 2)) },
@@ -2791,20 +3035,63 @@ async function enterSettings() {
   bits.push("map: " + (typeof L === "undefined" ? "library missing" : maps.blocked ? "tiles blocked here" : "ready"));
   bits.push(navigator.mediaDevices ? "camera API ✓" : "no camera API");
   bits.push(navigator.geolocation ? "geolocation API ✓" : "no geolocation API");
+  bits.push("BSN.cloud: " + (bsn.enabled() ? "direct mode on" : bsn.configured() ? "configured, off" : "not configured"));
   $("diag").textContent = bits.join(" · ");
+
+  /* BSN.cloud direct mode */
+  $("setBsnClient").value = settings.bsnClientId || ""; $("setBsnNetwork").value = settings.bsnNetwork || "";
+  $("setBsnMode").value = settings.bsnMode || "session"; $("setBsnEnabled").checked = !!settings.bsnEnabled;
+  $("setBsnSecret").value = "";
+  const bsnRefresh = () => {
+    $("setBsnSecretHelp").textContent = "Secret: " + bsn.secretState() + ". Leave blank to keep it.";
+    $("bsnState").textContent = bsn.enabled() ? "on" : bsn.configured() ? "off" : "";
+    $("btnBsnForget").disabled = !bsn.hasSecret();
+  };
+  bsnRefresh();
+  /* apply the form to the live settings (not yet persisted) and stash a newly pasted secret */
+  const bsnApplyForm = async () => {
+    settings.bsnClientId = $("setBsnClient").value.trim(); settings.bsnNetwork = $("setBsnNetwork").value.trim();
+    settings.bsnMode = $("setBsnMode").value; settings.bsnEnabled = $("setBsnEnabled").checked;
+    const sec = $("setBsnSecret").value.trim();
+    if (sec) {
+      let pass = null;
+      if (settings.bsnMode === "encrypted") {
+        pass = window.prompt("Choose a passphrase. It is asked for once per visit to unlock the secret on this phone:");
+        if (!pass) { toast("No passphrase — the secret is kept for this tab only."); settings.bsnMode = "session"; $("setBsnMode").value = "session"; }
+      }
+      await bsn.setSecret(sec, settings.bsnMode, pass);
+      $("setBsnSecret").value = "";
+    }
+    bsnRefresh();
+  };
+  $("btnBsnTest").onclick = async () => {
+    const out = $("bsnTestOut"); out.hidden = false; out.textContent = "Connecting…";
+    try {
+      await bsnApplyForm();
+      if (!bsn.configured()) throw new Error("client ID and network are required");
+      bsn.token = null; bsn.netAt = 0;
+      await bsn.getToken(true, true); await bsn.ensureNetwork(true);
+      let n = null; try { n = await bsn.count(); } catch (e) { n = e.message; }
+      out.textContent = `Connected. Network "${settings.bsnNetwork}" · players: ${n} · scopes: ${bsn.scopes || "(none reported)"}. ` +
+        (/devices\.retrieve/.test(bsn.scopes) && /devices\.update/.test(bsn.scopes) ? "Retrieve and update scopes present." : "Check the Application has the devices retrieve and update scopes.");
+    } catch (e) { out.textContent = "Not connected: " + (e.message || e); }
+  };
+  $("btnBsnForget").onclick = () => { bsn.forget(); bsnRefresh(); toast("BSN.cloud secret removed from this phone."); };
 
   $("btnSignout").onclick = () => {
     if (!confirm("Sign out? Records stay on this phone; the next person signs in with their own identity.")) return;
     identity = null; try { localStorage.removeItem(IKEY); } catch (e) {}
-    geo.stop();
+    geo.stop(); bsn.forget();
     go("signin");
   };
 
   dock({ rows: [
-    [{ label: "Save settings", kind: "primary", on: () => {
+    [{ label: "Save settings", kind: "primary", on: async () => {
       settings.api = $("setApi").value.trim(); settings.key = $("setKey").value.trim();
       settings.upload = $("setUpload").value.trim(); settings.pattern = $("setPattern").value.trim();
       if (settings.pattern) { try { new RegExp(settings.pattern); } catch (e) { toast("That serial pattern is not a valid regular expression."); return; } }
+      await bsnApplyForm();
+      if (settings.bsnEnabled && !bsn.configured()) { toast("Direct mode needs a client ID and a network."); return; }
       persist(SKEY, settings);
       toast("Settings saved.");
       go("home");
