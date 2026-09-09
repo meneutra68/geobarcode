@@ -1088,34 +1088,75 @@ let dbp;
 function db() {
   if (dbp) return dbp;
   dbp = new Promise((res, rej) => {
-    const rq = indexedDB.open(DB_NAME, 1);
+    let rq;
+    try { rq = indexedDB.open(DB_NAME, 1); } catch (e) { rej(e); return; }
     rq.onupgradeneeded = () => {
       const s = rq.result.createObjectStore(STORE, { keyPath: "id" });
       s.createIndex("capturedAt", "capturedAt");
     };
-    rq.onsuccess = () => res(rq.result);
-    rq.onerror = () => rej(rq.error);
+    rq.onsuccess = () => {
+      rq.result.onversionchange = () => { try { rq.result.close(); } catch (e) {} dbp = null; };
+      res(rq.result);
+    };
+    rq.onerror = () => rej(rq.error || new Error("IndexedDB refused to open"));
+    rq.onblocked = () => rej(new Error("IndexedDB is blocked by another tab"));
   });
+  dbp.catch(() => { dbp = null; });          /* a failed open is not cached */
   return dbp;
+}
+/* Every failure surfaces as a real Error with a name. Safari hands back null
+   for an aborted transaction, and a null cannot be shown to anyone.        */
+function idbError(e, fallback) {
+  if (e instanceof Error) return e;
+  if (e && (e.message || e.name)) { const x = new Error(e.message || e.name); x.name = e.name || "Error"; return x; }
+  return new Error(fallback || "unknown storage error");
 }
 async function tx(mode, fn) {
   const d = await db();
   return new Promise((res, rej) => {
-    const t = d.transaction(STORE, mode);
-    const rq = fn(t.objectStore(STORE));
+    let t, rq;
+    try { t = d.transaction(STORE, mode); rq = fn(t.objectStore(STORE)); }
+    catch (e) { rej(idbError(e, "transaction could not start")); return; }
     t.oncomplete = () => res(rq && rq.result !== undefined ? rq.result : undefined);
-    t.onerror = () => rej(t.error);
+    t.onerror = () => rej(idbError(t.error || (rq && rq.error), "write failed"));
+    t.onabort = () => rej(idbError(t.error || (rq && rq.error), "transaction aborted (storage full or unavailable)"));
   });
 }
-const putRecord = (r)  => tx("readwrite", (s) => s.put(r));
+/* photos: v2 stores an array; v1 stored a single blob */
+const photosOf = (r) => (r.photos && r.photos.length ? r.photos : r.photo ? [r.photo] : []);
+/* Photos are stored as raw bytes, not Blob objects: iOS Safari has refused
+   or silently dropped Blobs in IndexedDB across several releases, and bytes
+   store the same everywhere. They come back out as Blobs.                  */
+async function toStored(r) {
+  const photos = [];
+  for (const p of photosOf(r)) {
+    if (p instanceof Blob) photos.push({ type: p.type || "image/jpeg", bytes: await p.arrayBuffer() });
+    else if (p && p.bytes) photos.push(p);
+  }
+  const out = Object.assign({}, r, { photos, photoType: "image/jpeg" });
+  delete out.photo;
+  return out;
+}
+function fromStored(r) {
+  if (r && r.photos) r.photos = r.photos.map((p) => (p instanceof Blob ? p : p && p.bytes ? new Blob([p.bytes], { type: p.type || "image/jpeg" }) : null)).filter(Boolean);
+  return r;
+}
+async function putRecord(r) {
+  const stored = await toStored(r);
+  try { return await tx("readwrite", (s) => s.put(stored)); }
+  catch (e) {
+    /* Safari's connection goes stale after the phone sleeps: one clean
+       reopen before giving up */
+    dbp = null;
+    return tx("readwrite", (s) => s.put(stored));
+  }
+}
 const delRecord = (id) => tx("readwrite", (s) => s.delete(id));
 const wipeStore = ()   => tx("readwrite", (s) => s.clear());
 async function allRecords() {
   const rows = await tx("readonly", (s) => s.getAll());
-  return (rows || []).sort((a, b) => b.capturedAt - a.capturedAt);
+  return (rows || []).map(fromStored).sort((a, b) => b.capturedAt - a.capturedAt);
 }
-/* photos: v2 stores an array; v1 stored a single blob */
-const photosOf = (r) => (r.photos && r.photos.length ? r.photos : r.photo ? [r.photo] : []);
 
 /* ── camera ──────────────────────────────────────────────────────────── */
 const cam = {
@@ -2325,6 +2366,10 @@ async function commit() {
   persist(CKEY, context);
   ["cfStore","cfRetailer","cfDisplay","cfNotes"].forEach((id) => { delete $(id).dataset.touched; $(id).value = ""; });
 
+  await saveAndSend(rec);
+}
+
+async function saveAndSend(rec) {
   await go("sending");
   $("sendTitle").textContent = "Logging";
   $("sendStep").textContent = "Writing to this device…";
@@ -2332,13 +2377,28 @@ async function commit() {
 
   try { await putRecord(rec); }
   catch (e) {
-    await go("done");
-    $("doneEcho").hidden = true;
-    $("doneStamp").className = "stamp err"; $("doneStamp").textContent = "!";
-    $("doneTitle").textContent = "Could not save";
-    $("doneBody").textContent = "Local storage refused the write: " + (e.message || e) + ". Private browsing blocks it.";
-    dock({ rows: [[{ label: "Home", kind: "primary", on: () => go("home") }]] });
-    return;
+    const first = idbError(e);
+    /* second chance without the photos: serial, position, time and notes are
+       the record — a capture with no images beats no capture at all */
+    const n = photosOf(rec).length;
+    try {
+      if (!n) throw first;
+      $("sendStep").textContent = "Photos would not store — saving the record without them…";
+      rec.photos = []; rec.photosDropped = n; rec.error = "photos not stored on this phone: " + first.message;
+      await putRecord(rec);
+    } catch (e2) {
+      const err = idbError(e2);
+      await go("done");
+      $("doneEcho").hidden = true;
+      $("doneStamp").className = "stamp err"; $("doneStamp").textContent = "!";
+      $("doneTitle").textContent = "Could not save";
+      $("doneBody").textContent = `This browser refused the write (${err.name}: ${err.message}). Private Browsing, a full phone, or a stale storage connection do this. Copy the record so nothing is lost, then try again — or open the app in a normal Safari tab.`;
+      dock({ rows: [
+        [{ label: "Copy record as JSON", kind: "primary", on: () => copyText(JSON.stringify(buildEnvelope(rec), null, 2)) }],
+        [{ label: "Try again", kind: "ghost", on: () => { dbp = null; saveAndSend(rec); } }, { label: "Home", kind: "ghost", on: () => go("home") }]
+      ] });
+      return;
+    }
   }
 
   /* the wireframes showed "Best Buy, 1010 Smith Rd" under every capture:
@@ -2423,7 +2483,7 @@ async function finishDone(rec) {
   $("doneBody").textContent = failed
     ? rec.error + " — the capture is safe on this device; send it later from the log."
     : rec.status === "sent" ? "Endpoint accepted the capture." + (rec.error ? " " + rec.error : "")
-    : "Held on this device as an event in this unit's history.";
+    : "Held on this device as an event in this unit's history." + (rec.photosDropped ? ` The ${rec.photosDropped} photo${rec.photosDropped > 1 ? "s" : ""} could not be stored on this phone and ${rec.photosDropped > 1 ? "were" : "was"} left out.` : "");
   renderEcho(rec.echo);
   dock({ rows: [
     [{ label: "Scan next unit", kind: "primary", on: () => { resetWorkflow(); go("scan"); } }],
