@@ -1024,6 +1024,8 @@ details.opt[open] summary::after { content: "–"; }
           <button class="btn slim" id="btnExportCsv">Export all events · CSV</button>
           <button class="btn slim" id="btnExportUnits">Export latest per unit · CSV</button>
           <button class="btn slim" id="btnExportJson">Export envelopes · JSON</button>
+          <label class="check" style="margin-top:6px"><input type="checkbox" id="setPdfCompact" checked> Compact photos in the PDF (about 900 px, smaller file)</label>
+          <button class="btn slim" id="btnExportPdf">Export PDF report · all units, with photos</button>
           <button class="btn danger slim" id="btnWipe">Delete all records</button>
         </div>
 
@@ -2905,7 +2907,7 @@ async function enterUnit() {
 
   dock({ rows: [
     [{ label: "Capture this unit again", kind: "primary", on: startCapture }],
-    [{ label: "Back to log", kind: "ghost", on: () => go("records") }, { label: "Home", kind: "ghost", on: () => go("home") }]
+    [{ label: "PDF report", kind: "ghost", on: () => exportPdf({ code }) }, { label: "Back to log", kind: "ghost", on: () => go("records") }, { label: "Home", kind: "ghost", on: () => go("home") }]
   ] });
 }
 function haversine(a1, o1, a2, o2) {
@@ -3100,6 +3102,385 @@ async function enterSettings() {
   ] });
 }
 
+/* ── PDF field report ──────────────────────────────────────────────────────
+   A small PDF 1.4 writer: US Letter, the standard Helvetica / Courier faces
+   (no embedding), photos as JPEG XObjects, coordinates as tap-to-open Maps
+   links. One report = summary, contents, then one section per serial with
+   its visits in order and their photos. Built entirely on the phone, so it
+   works offline and the evidence never leaves the device unless shared.   */
+const PDF = { W: 612, H: 792, M: 48 };
+/* Helvetica / Helvetica-Bold advance widths for chars 32..126 (per 1000 em) */
+const HELV  = [278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584];
+const HELVB = [278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,584,556,333,556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,584];
+const PDF_FONTS = { F1: "Helvetica", F2: "Helvetica-Bold", F3: "Courier", F4: "Courier-Bold" };
+/* WinAnsi has most of what the app prints; the rest gets an ASCII stand-in */
+const WINANSI = { "—": 0x97, "–": 0x96, "…": 0x85, "“": 0x93, "”": 0x94, "‘": 0x91, "’": 0x92, "•": 0x95, "™": 0x99 };
+function pdfSan(s) {
+  let out = "";
+  for (const ch of String(s == null ? "" : s)) {
+    const c = ch.codePointAt(0);
+    if (c < 0x80) out += ch;
+    else if (WINANSI[ch]) out += String.fromCharCode(WINANSI[ch]);
+    else if (c <= 0xFF) out += ch;
+    else if (ch === "→") out += "->";
+    else if (ch === "✓") out += "OK";
+    else if (ch === "½") out += String.fromCharCode(0xBD);
+    else out += "?";
+  }
+  return out;
+}
+function pdfStr(s) {
+  let out = "(";
+  for (const ch of pdfSan(s)) {
+    const c = ch.charCodeAt(0);
+    if (ch === "(" || ch === ")" || ch === "\\") out += "\\" + ch;
+    else if (c < 32 || c > 126) out += "\\" + c.toString(8).padStart(3, "0");
+    else out += ch;
+  }
+  return out + ")";
+}
+function pdfWidth(s, font, size) {
+  const t = pdfSan(s); let w = 0;
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    if (font === "F3" || font === "F4") w += 600;
+    else { const tab = font === "F2" ? HELVB : HELV; w += c >= 32 && c <= 126 ? tab[c - 32] : 556; }
+  }
+  return (w / 1000) * size;
+}
+function pdfWrap(s, font, size, maxW) {
+  const lines = [];
+  for (const para of String(s == null ? "" : s).split(/\r?\n/)) {
+    const words = para.split(/\s+/).filter(Boolean);
+    if (!words.length) { lines.push(""); continue; }
+    let line = "";
+    for (const w of words) {
+      const t = line ? line + " " + w : w;
+      if (pdfWidth(t, font, size) <= maxW) { line = t; continue; }
+      if (line) lines.push(line);
+      /* a single token longer than the line (a URL, a long serial) is cut hard */
+      let piece = w;
+      while (pdfWidth(piece, font, size) > maxW && piece.length > 1) {
+        let n = piece.length; while (n > 1 && pdfWidth(piece.slice(0, n), font, size) > maxW) n--;
+        lines.push(piece.slice(0, n)); piece = piece.slice(n);
+      }
+      line = piece;
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+/* JPEG SOF scan: width, height, component count (so the XObject gets the
+   right colour space). Returns null for anything that is not a baseline or
+   progressive JPEG. */
+function jpegInfo(u8) {
+  if (!(u8[0] === 0xFF && u8[1] === 0xD8)) return null;
+  let i = 2;
+  while (i + 9 < u8.length) {
+    if (u8[i] !== 0xFF) { i++; continue; }
+    const m = u8[i + 1];
+    if (m === 0xFF) { i++; continue; }
+    if (m === 0xD8 || m === 0x01 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }
+    const len = (u8[i + 2] << 8) | u8[i + 3];
+    if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC)
+      return { h: (u8[i + 5] << 8) | u8[i + 6], w: (u8[i + 7] << 8) | u8[i + 8], comps: u8[i + 9] };
+    i += 2 + len;
+  }
+  return null;
+}
+/* photo blob → { bytes, w, h, comps }; optionally re-encoded smaller via canvas */
+async function pdfPhoto(blob, compact) {
+  let bytes = new Uint8Array(await blob.arrayBuffer());
+  let info = jpegInfo(bytes);
+  const long = info ? Math.max(info.w, info.h) : Infinity;
+  if (!info || info.comps === 4 || (compact && long > 900)) {
+    const bmp = await createImageBitmap(blob);
+    const scale = compact ? Math.min(1, 900 / Math.max(bmp.width, bmp.height)) : 1;
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(bmp.width * scale)); c.height = Math.max(1, Math.round(bmp.height * scale));
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+    if (bmp.close) bmp.close();
+    const out = await new Promise((res) => c.toBlob(res, "image/jpeg", compact ? 0.72 : 0.9));
+    bytes = new Uint8Array(await out.arrayBuffer());
+    info = jpegInfo(bytes) || { w: c.width, h: c.height, comps: 3 };
+  }
+  return { bytes, w: info.w, h: info.h, comps: info.comps };
+}
+
+/* the document: pages are built as op lists so footers (page x of y) can be
+   stamped after the count is known */
+class PdfDoc {
+  constructor() { this.pages = []; this.images = []; this.cur = null; this.y = 0; }
+  newPage() {
+    this.cur = { ops: [], annots: [], imgs: new Set() };
+    this.pages.push(this.cur);
+    this.y = PDF.H - PDF.M;
+    return this.pages.length;
+  }
+  get pageNo() { return this.pages.length; }
+  ensure(h) { if (!this.cur || this.y - h < PDF.M + 22) this.newPage(); }
+  op(s) { this.cur.ops.push(s); }
+  /* one line of text at the current cursor (no wrapping) */
+  line(txt, font, size, x, opts) {
+    const o = opts || {};
+    const gray = o.gray != null ? o.gray : 0;
+    this.op(`BT /${font} ${size} Tf ${gray} g 1 0 0 1 ${x.toFixed(2)} ${(this.y - size).toFixed(2)} Tm ${pdfStr(txt)} Tj ET`);
+    if (o.link) {
+      const w = pdfWidth(txt, font, size);
+      this.cur.annots.push({ rect: [x, this.y - size - 2, x + w, this.y + 2], uri: o.link });
+    }
+    if (!o.hold) this.y -= size * (o.leading || 1.3);
+  }
+  /* wrapped paragraph; returns lines drawn */
+  text(txt, font, size, x, maxW, opts) {
+    const lines = pdfWrap(txt, font, size, maxW);
+    for (const l of lines) { this.ensure(size * 1.3); this.line(l, font, size, x, opts); }
+    return lines.length;
+  }
+  gap(h) { this.y -= h; }
+  rule(gray) { this.ensure(6); this.op(`${gray == null ? 0.8 : gray} G 0.5 w ${PDF.M} ${(this.y - 2).toFixed(2)} m ${PDF.W - PDF.M} ${(this.y - 2).toFixed(2)} l S`); this.y -= 8; }
+  /* ledger row: small caps key on the left, wrapped value on the right */
+  row(k, v, opts) {
+    const o = opts || {};
+    const keyW = 104, x = PDF.M, vx = x + keyW, vw = PDF.W - PDF.M - vx;
+    const lines = pdfWrap(v, o.mono ? "F3" : "F1", 9, vw);
+    const h = Math.max(1, lines.length) * 9 * 1.3;
+    this.ensure(h + 3);
+    const top = this.y;
+    this.op(`BT /F2 7 Tf 0.45 g 1 0 0 1 ${x} ${(top - 8).toFixed(2)} Tm ${pdfStr(String(k).toUpperCase())} Tj ET`);
+    lines.forEach((l, i) => {
+      const yy = top - 9 - i * 9 * 1.3;
+      this.op(`BT /${o.mono ? "F3" : "F1"} 9 Tf 0 g 1 0 0 1 ${vx} ${yy.toFixed(2)} Tm ${pdfStr(l)} Tj ET`);
+      if (o.link && i === 0) this.cur.annots.push({ rect: [vx, yy - 2, vx + pdfWidth(l, o.mono ? "F3" : "F1", 9), yy + 9], uri: o.link });
+    });
+    this.y = top - h - 3;
+  }
+  /* photo grid, two across, captions underneath */
+  photos(list, captions) {
+    const colW = (PDF.W - 2 * PDF.M - 12) / 2, maxH = 230;
+    for (let i = 0; i < list.length; i += 2) {
+      const pair = list.slice(i, i + 2);
+      const sizes = pair.map((p) => { const s = Math.min(colW / p.w, maxH / p.h); return { w: p.w * s, h: p.h * s }; });
+      const rowH = Math.max(...sizes.map((s) => s.h)) + 14;
+      this.ensure(rowH + 6);
+      pair.forEach((p, j) => {
+        const idx = this.images.indexOf(p); const n = idx >= 0 ? idx : (this.images.push(p) - 1);
+        const name = "Im" + n; this.cur.imgs.add(n);
+        const x = PDF.M + j * (colW + 12), s = sizes[j], yTop = this.y;
+        this.op(`q ${s.w.toFixed(2)} 0 0 ${s.h.toFixed(2)} ${x.toFixed(2)} ${(yTop - s.h).toFixed(2)} cm /${name} Do Q`);
+        this.op(`BT /F1 7.5 Tf 0.45 g 1 0 0 1 ${x.toFixed(2)} ${(yTop - s.h - 9).toFixed(2)} Tm ${pdfStr(captions[i + j] || "")} Tj ET`);
+      });
+      this.y -= rowH + 6;
+    }
+  }
+  /* serialise: header, objects, xref, trailer */
+  build(footer) {
+    const enc = (s) => { const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i) & 0xFF; return u; };
+    const objs = [];                       /* index = objnum - 1, value = array of Uint8Array */
+    const add = (parts) => { objs.push(parts); return objs.length; };
+    const catalog = add(null), pagesObj = add(null);
+    const fontIds = {};
+    for (const k of Object.keys(PDF_FONTS)) fontIds[k] = add([enc(`<< /Type /Font /Subtype /Type1 /BaseFont /${PDF_FONTS[k]} /Encoding /WinAnsiEncoding >>`)]);
+    const imgIds = this.images.map((p) => add([enc(`<< /Type /XObject /Subtype /Image /Width ${p.w} /Height ${p.h} /ColorSpace /${p.comps === 1 ? "DeviceGray" : "DeviceRGB"} /BitsPerComponent 8 /Filter /DCTDecode /Length ${p.bytes.length} >>\nstream\n`), p.bytes, enc(`\nendstream`)]));
+    const total = this.pages.length, pageIds = [];
+    this.pages.forEach((pg, i) => {
+      const foot = footer(i + 1, total);
+      pg.ops.push(`BT /F1 7 Tf 0.5 g 1 0 0 1 ${PDF.M} ${PDF.M - 18} Tm ${pdfStr(foot)} Tj ET`);
+      const pn = `Page ${i + 1} of ${total}`;
+      pg.ops.push(`BT /F1 7 Tf 0.5 g 1 0 0 1 ${(PDF.W - PDF.M - pdfWidth(pn, "F1", 7)).toFixed(2)} ${PDF.M - 18} Tm ${pdfStr(pn)} Tj ET`);
+      const content = enc(pg.ops.join("\n"));
+      const cid = add([enc(`<< /Length ${content.length} >>\nstream\n`), content, enc(`\nendstream`)]);
+      const annotIds = pg.annots.map((a) => add([enc(`<< /Type /Annot /Subtype /Link /Rect [${a.rect.map((v) => v.toFixed(2)).join(" ")}] /Border [0 0 0] /A << /S /URI /URI ${pdfStr(a.uri)} >> >>`)]));
+      const xo = [...pg.imgs].map((n) => `/Im${n} ${imgIds[n]} 0 R`).join(" ");
+      const fo = Object.keys(fontIds).map((k) => `/${k} ${fontIds[k]} 0 R`).join(" ");
+      const pid = add([enc(`<< /Type /Page /Parent ${pagesObj} 0 R /MediaBox [0 0 ${PDF.W} ${PDF.H}] /Resources << /Font << ${fo} >> ${xo ? `/XObject << ${xo} >>` : ""} >> /Contents ${cid} 0 R${annotIds.length ? ` /Annots [${annotIds.map((n) => n + " 0 R").join(" ")}]` : ""} >>`)]);
+      pageIds.push(pid);
+    });
+    objs[catalog - 1] = [enc(`<< /Type /Catalog /Pages ${pagesObj} 0 R >>`)];
+    objs[pagesObj - 1] = [enc(`<< /Type /Pages /Kids [${pageIds.map((n) => n + " 0 R").join(" ")}] /Count ${pageIds.length} >>`)];
+    const chunks = [enc("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n")];
+    let offset = chunks[0].length; const offsets = [];
+    objs.forEach((parts, i) => {
+      offsets.push(offset);
+      const head = enc(`${i + 1} 0 obj\n`), tail = enc(`\nendobj\n`);
+      chunks.push(head); offset += head.length;
+      for (const p of parts) { chunks.push(p); offset += p.length; }
+      chunks.push(tail); offset += tail.length;
+    });
+    let xref = `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+    for (const o of offsets) xref += String(o).padStart(10, "0") + " 00000 n \n";
+    xref += `trailer\n<< /Size ${objs.length + 1} /Root ${catalog} 0 R >>\nstartxref\n${offset}\n%%EOF\n`;
+    chunks.push(enc(xref));
+    return new Blob(chunks, { type: "application/pdf" });
+  }
+}
+
+const fmtM = (dm) => (dm >= 1000 ? (dm / 1000).toFixed(1) + " km" : Math.round(dm) + " m");
+/* Build the report. opts.code limits it to one serial; opts.compact shrinks photos. */
+async function buildPdfReport(rows, opts) {
+  const o = opts || {};
+  const byCode = new Map();
+  rows.forEach((r) => { if (!byCode.has(r.code)) byCode.set(r.code, []); byCode.get(r.code).push(r); });
+  const codes = [...byCode.keys()].sort((a, b) => a.localeCompare(b));
+  const now = new Date();
+  const title = o.code ? `GeoBarcode Unit Report · ${o.code}` : "GeoBarcode Field Report";
+  const doc = new PdfDoc();
+
+  /* summary page */
+  doc.newPage();
+  doc.line(title, "F2", 20, PDF.M, { leading: 1.25 });
+  doc.line(`Generated ${humanDate(now)} by ${identity ? identity.name + (identity.org ? " · " + identity.org : "") : "unknown operator"}`, "F1", 9.5, PDF.M, { gray: 0.35 });
+  doc.gap(10); doc.rule(0.6); doc.gap(4);
+  const allSorted = rows.slice().sort((a, b) => a.capturedAt - b.capturedAt);
+  const sites = [...new Set(rows.map((r) => [r.retailer, r.storeId].filter(Boolean).join(" ")).filter(Boolean))];
+  const people = [...new Set(rows.map((r) => r.userName).filter(Boolean))];
+  const nets = [...new Set(rows.map((r) => r.bsn && r.bsn.network).filter(Boolean))];
+  doc.row("Units", String(codes.length));
+  doc.row("Visits", String(rows.length));
+  if (allSorted.length) doc.row("Period", `${humanDate(new Date(allSorted[0].capturedAt))}  to  ${humanDate(new Date(allSorted[allSorted.length - 1].capturedAt))}`);
+  if (sites.length) doc.row("Sites", sites.join(", "));
+  if (people.length) doc.row("Captured by", people.join(", "));
+  if (nets.length) doc.row("BSN.cloud", `written to network ${nets.join(", ")} · ${rows.filter((r) => r.bsn && r.bsn.status === "updated").length} of ${rows.length} visits`);
+  doc.row("Photos", String(rows.reduce((n, r) => n + photosOf(r).length, 0)));
+  doc.gap(6);
+  doc.text("Each unit below is one serial number. Its visits are every capture event recorded for that serial, oldest first, with the position that was logged, who logged it, notes, and the photographs taken. Coordinates are tappable and open in Maps. Positions marked “phone GPS” carry the receiver’s accuracy; adjusted, typed, address and site-pin positions were set by the operator.", "F1", 8.5, PDF.M, PDF.W - 2 * PDF.M, { gray: 0.3 });
+
+  /* contents: page numbers are known only after the unit pages exist, so
+     leave room now and fill the lines in afterwards */
+  const tocLines = codes.length > 1 ? codes.length : 0;
+  const tocCap = Math.floor((PDF.H - 2 * PDF.M - 40) / 13);
+  const tocPages = tocLines ? Math.ceil(tocLines / tocCap) : 0;
+  const tocStart = doc.pages.length;            /* index where TOC pages will be inserted */
+  const unitPage = {};
+
+  /* unit sections */
+  for (const code of codes) {
+    const evs = byCode.get(code).slice().sort((a, b) => a.capturedAt - b.capturedAt);
+    doc.newPage();
+    unitPage[code] = doc.pages.length + tocPages;   /* final page number once TOC pages are inserted */
+    doc.line("UNIT", "F2", 7, PDF.M, { gray: 0.45, leading: 1.5 });
+    doc.line(code, "F4", 18, PDF.M, { leading: 1.35 });
+    const first = evs[0], last = evs[evs.length - 1];
+    doc.row("Visits", String(evs.length));
+    doc.row("First seen", humanDate(new Date(first.capturedAt)));
+    doc.row("Last seen", humanDate(new Date(last.capturedAt)));
+    const withPos = evs.filter((r) => r.lat != null);
+    if (withPos.length) { const lp = withPos[withPos.length - 1]; doc.row("Latest position", `${f8(lp.lat)}, ${f8(lp.lon)}` + (lp.acc != null ? `  ±${lp.acc} m` : "") + `  (${srcLabel(lp.locSource)})`, { mono: true, link: `https://maps.apple.com/?ll=${lp.lat},${lp.lon}&q=${encodeURIComponent(code)}` }); }
+    const usites = [...new Set(evs.map((r) => [r.retailer, r.storeId].filter(Boolean).join(" ")).filter(Boolean))];
+    if (usites.length) doc.row(usites.length > 1 ? "Sites" : "Site", usites.join("  ->  "));
+    const dts = [...new Set(evs.map((r) => r.displayType).filter(Boolean))];
+    if (dts.length) doc.row("Display type", dts.join(", "));
+    const upeople = [...new Set(evs.map((r) => r.userName).filter(Boolean))];
+    if (upeople.length) doc.row("Captured by", upeople.join(", "));
+    const lastBsn = evs.slice().reverse().find((r) => r.bsn && r.bsn.status === "updated");
+    if (lastBsn) doc.row("BSN.cloud", `${lastBsn.bsn.name || "player " + lastBsn.bsn.deviceId} · ${lastBsn.bsn.network} · location written ${humanDate(new Date(lastBsn.bsn.at))}`);
+    doc.gap(4);
+
+    for (let i = 0; i < evs.length; i++) {
+      const r = evs[i], d = new Date(r.capturedAt);
+      doc.gap(6); doc.rule(0.75);
+      doc.ensure(60);
+      doc.line(`Visit ${i + 1} of ${evs.length} · ${humanDate(d)}`, "F2", 11, PDF.M, { leading: 1.4 });
+      doc.row("Time", `${localStamp(d)}  ·  ${utcStamp(d)} UTC`, { mono: true });
+      if (r.lat != null) {
+        doc.row("Position", `${f8(r.lat)}, ${f8(r.lon)}` + (r.acc != null ? `  ±${r.acc} m` : "") + `  (${srcLabel(r.locSource)})`, { mono: true, link: `https://maps.apple.com/?ll=${r.lat},${r.lon}&q=${encodeURIComponent(r.code)}` });
+        const prev = evs.slice(0, i).reverse().find((p) => p.lat != null);
+        if (prev) { const dm = haversine(prev.lat, prev.lon, r.lat, r.lon); const tol = (r.acc || 0) + (prev.acc || 0); doc.row("Since previous", dm > Math.max(tol, 30) ? `moved ${fmtM(dm)}` : `same place (${fmtM(dm)} apart, within accuracy)`); }
+      } else doc.row("Position", "not captured" + (r.storeId ? " · identified by Store ID" : ""));
+      if (r.addr && addrLine(r.addr)) doc.row("Address", addrLine(r.addr) + (r.addr.country ? ", " + r.addr.country : ""));
+      if (r.retailer || r.storeId) doc.row("Site", [r.retailer, r.storeId].filter(Boolean).join(" · "));
+      if (r.displayType) doc.row("Display type", r.displayType);
+      doc.row("Symbology", fmtLabel(r.format));
+      if (r.userName || r.userId) doc.row("Captured by", [r.userName, r.userId, r.vendor].filter(Boolean).join(" · "));
+      if (r.notes) doc.row("Notes", r.notes);
+      (r.annotations || []).forEach((a) => doc.row("Added note", `${humanStamp(new Date(a.at))} — ${a.text}` + (a.by ? `  (${a.by})` : "")));
+      const st = [r.status === "sent" ? "sent to endpoint" : r.status === "failed" ? "endpoint send failed" : "held on device"];
+      if (r.bsn) st.push(r.bsn.status === "updated" ? `BSN.cloud location written (${r.bsn.name || "player " + r.bsn.deviceId}, ${r.bsn.network})` : r.bsn.status === "not-found" ? `not a player in BSN.cloud network ${r.bsn.network}` : r.bsn.status === "failed" ? "BSN.cloud write failed: " + r.bsn.error : "BSN.cloud: " + r.bsn.status);
+      if (r.photosDropped) st.push(`${r.photosDropped} photo(s) could not be stored on the phone`);
+      doc.row("Status", st.join("  ·  "));
+      const ph = photosOf(r);
+      if (ph.length) {
+        doc.row("Photos", String(ph.length));
+        const imgs = [];
+        for (let k = 0; k < ph.length; k++) {
+          if (o.onProgress) o.onProgress(`Photo ${imgs.length + 1} of ${ph.length} · visit ${i + 1} · ${code}`);
+          try { imgs.push(await pdfPhoto(ph[k], o.compact !== false)); } catch (e) { /* an unreadable photo is skipped, not fatal */ }
+        }
+        doc.gap(2);
+        doc.photos(imgs, imgs.map((_, k) => `${code} · visit ${i + 1} · photo ${k + 1} · ${humanStamp(d)}`));
+      }
+    }
+  }
+
+  /* contents pages, inserted after the summary */
+  if (tocPages) {
+    const tocDocs = [];
+    for (let p = 0; p < tocPages; p++) {
+      const pg = { ops: [], annots: [], imgs: new Set() };
+      let y = PDF.H - PDF.M;
+      pg.ops.push(`BT /F2 13 Tf 0 g 1 0 0 1 ${PDF.M} ${y - 13} Tm ${pdfStr(p === 0 ? "Contents" : "Contents (continued)")} Tj ET`);
+      y -= 30;
+      codes.slice(p * tocCap, (p + 1) * tocCap).forEach((code) => {
+        const n = byCode.get(code).length, pn = String(unitPage[code]);
+        pg.ops.push(`BT /F3 9 Tf 0 g 1 0 0 1 ${PDF.M} ${y - 9} Tm ${pdfStr(code)} Tj ET`);
+        pg.ops.push(`BT /F1 9 Tf 0.35 g 1 0 0 1 ${PDF.M + 190} ${y - 9} Tm ${pdfStr(n + (n === 1 ? " visit" : " visits"))} Tj ET`);
+        pg.ops.push(`BT /F1 9 Tf 0 g 1 0 0 1 ${(PDF.W - PDF.M - pdfWidth(pn, "F1", 9)).toFixed(2)} ${y - 9} Tm ${pdfStr(pn)} Tj ET`);
+        pg.ops.push(`0.85 G 0.3 w ${PDF.M} ${y - 12} m ${PDF.W - PDF.M} ${y - 12} l S`);
+        y -= 13;
+      });
+      tocDocs.push(pg);
+    }
+    doc.pages.splice(tocStart, 0, ...tocDocs);
+  }
+  return doc.build((p, t) => `${title} · generated ${humanDate(now)}`);
+}
+
+/* hand a file to the operator: native share sheet in the shell, Web Share on
+   the phone, a download everywhere else */
+async function deliverFile(blob, name) {
+  if (native && native.Share && native.Filesystem) {
+    try {
+      const b64 = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(",")[1]); fr.onerror = rej; fr.readAsDataURL(blob); });
+      const w = await native.Filesystem.writeFile({ path: name, data: b64, directory: "CACHE" });
+      await native.Share.share({ title: name, files: [w.uri] });
+      return true;
+    } catch (e) { if (e && /cancel/i.test(e.message || "")) return true; }
+  }
+  const file = new File([blob], name, { type: blob.type });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); return true; }
+    catch (e) { if (e && e.name === "AbortError") return true; }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = el("a"); a.href = url; a.download = name; a.rel = "noopener";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  return true;
+}
+
+async function exportPdf(opts) {
+  const o = opts || {};
+  let rows = await allRecords();
+  if (o.code) rows = rows.filter((r) => r.code === o.code);
+  if (!rows.length) { toast("Nothing to report yet."); return; }
+  const back = app.screen;
+  const compact = $("setPdfCompact") ? $("setPdfCompact").checked : true;
+  await go("sending");
+  $("rail").hidden = true;
+  $("sendTitle").textContent = "Building PDF report";
+  $("sendStep").textContent = `${rows.length} visit${rows.length === 1 ? "" : "s"}…`;
+  dock(null);
+  try {
+    const blob = await buildPdfReport(rows, { code: o.code, compact, onProgress: (m) => { $("sendStep").textContent = m; } });
+    const name = `geobarcode-${o.code ? o.code.replace(/[^A-Za-z0-9_-]+/g, "_") : "report"}-${new Date().toISOString().slice(0, 10)}.pdf`;
+    $("sendStep").textContent = `Report ready · ${(blob.size / 1048576).toFixed(1)} MB`;
+    await deliverFile(blob, name);
+  } catch (e) {
+    toast("Could not build the report: " + (e.message || e));
+  }
+  go(back === "sending" ? "home" : back);
+}
+
 /* ── export / clipboard ──────────────────────────────────────────────── */
 const csvEsc = (v) => { const s = v == null ? "" : String(v); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
 function toCsv(rows) {
@@ -3190,6 +3571,7 @@ $("btnSettings").addEventListener("click", () => { if (identity) go("settings");
 $("btnExportCsv").addEventListener("click", () => exportData("csv"));
 $("btnExportUnits").addEventListener("click", () => exportData("units"));
 $("btnExportJson").addEventListener("click", () => exportData("json"));
+$("btnExportPdf").addEventListener("click", () => exportPdf());
 $("btnWipe").addEventListener("click", async () => {
   if (!confirm("Delete every capture event and photo held on this device? This cannot be undone.")) return;
   await wipeStore(); clearThumbs(); toast("All records deleted."); go("home");
