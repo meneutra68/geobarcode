@@ -659,6 +659,22 @@ details.opt[open] summary::after { content: "–"; }
 }
 .lightbox[hidden] { display: none !important; }
 .lightbox img { max-width: 100%; max-height: 100%; border-radius: 6px; }
+/* bottom sheet: a short list of actions, used by the Export tile */
+.sheet { position: fixed; inset: 0; z-index: 45; background: rgba(0,0,0,0.62); display: flex; align-items: flex-end; }
+.sheet[hidden] { display: none !important; }
+.sheet-card {
+  width: 100%; background: var(--surface); border-top: 1px solid var(--hairline);
+  border-radius: 16px 16px 0 0; padding: 14px var(--pad) calc(var(--safe-b) + 4px);
+}
+.sheet-card .eyebrow { margin-bottom: 6px; }
+.sheet-card .item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  width: 100%; text-align: left; padding: 13px 0; border-top: 1px solid var(--hairline-lo);
+}
+.sheet-card .item:active { background: var(--surface-2); }
+.sheet-card .item b { font-size: 15px; font-weight: 600; }
+.sheet-card .item span { font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--ink-3); }
+.sheet-card .cancel { margin-top: 10px; width: 100%; }
 .lightbox > button {
   position: absolute; top: calc(var(--safe-t) + 8px); right: 14px;
   width: 40px; height: 40px; border-radius: 50%; background: rgba(231,237,243,0.12); color: #fff; font-size: 18px;
@@ -1039,6 +1055,13 @@ details.opt[open] summary::after { content: "–"; }
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="sheet" id="sheet" hidden role="dialog" aria-modal="true">
+  <div class="sheet-card">
+    <div class="eyebrow" id="sheetTitle"></div>
+    <div id="sheetBody"></div>
+    <button class="btn ghost slim cancel" id="sheetCancel">Cancel</button>
+  </div>
+</div>
 <div class="lightbox" id="lightbox" hidden>
   <div class="lb-stack"><img id="lbImg" alt="Capture photo"><div class="lb-cap" id="lbCap" hidden></div></div>
   <button id="lbClose" aria-label="Close">✕</button>
@@ -1899,12 +1922,12 @@ async function enterHome() {
   if (settings.api || bsn.enabled()) {
     T.appendChild(tile({ icon: "send", title: unsent ? "Send unsent" : "All sent", sub: unsent ? `${unsent} waiting` : "endpoint up to date", hot: unsent > 0, quiet: !unsent,
       disabled: !unsent, on: () => sendAll(rows.filter(needsSend)) }));
-    T.appendChild(tile({ icon: "export", title: "Export", sub: "CSV · JSON", on: () => go("settings"), disabled: !rows.length }));
+    T.appendChild(tile({ icon: "export", title: "Export", sub: "PDF · CSV · JSON", on: exportSheet, disabled: !rows.length }));
   } else if (bsn.configured()) {
-    T.appendChild(tile({ icon: "export", title: "Export", sub: rows.length ? "CSV · JSON" : "nothing to export", on: () => go("settings"), disabled: !rows.length }));
+    T.appendChild(tile({ icon: "export", title: "Export", sub: rows.length ? "PDF · CSV · JSON" : "nothing to export", on: exportSheet, disabled: !rows.length }));
     T.appendChild(tile({ icon: "settings", title: "BSN.cloud", sub: "direct mode off · turn on", quiet: true, on: () => go("settings") }));
   } else {
-    T.appendChild(tile({ icon: "export", title: "Export", sub: rows.length ? "CSV · JSON" : "nothing to export", on: () => go("settings"), disabled: !rows.length }));
+    T.appendChild(tile({ icon: "export", title: "Export", sub: rows.length ? "PDF · CSV · JSON" : "nothing to export", on: exportSheet, disabled: !rows.length }));
     T.appendChild(tile({ icon: "settings", title: "Upstream", sub: "local only · add endpoint", quiet: true, on: () => go("settings") }));
   }
 
@@ -2821,7 +2844,7 @@ async function enterRecords() {
   const rowsSpec = [[{ label: "New scan", kind: "primary", on: () => { resetWorkflow(); go("scan"); } }]];
   const second = [];
   if (settings.api && unsent.length) second.push({ label: `Send ${unsent.length} unsent`, kind: "ghost", on: () => sendAll(unsent) });
-  second.push({ label: "Export", kind: "ghost", on: () => exportData("csv") });
+  second.push({ label: "Export", kind: "ghost", on: exportSheet });
   second.push({ label: "Home", kind: "ghost", on: () => go("home") });
   rowsSpec.push(second);
   dock({ rows: rowsSpec });
@@ -3458,13 +3481,44 @@ async function deliverFile(blob, name) {
   return true;
 }
 
+/* bottom sheet: title + a few actions; resolves when one is tapped or it is dismissed */
+function sheet(title, items) {
+  const box = $("sheet"), body = $("sheetBody");
+  $("sheetTitle").textContent = title;
+  body.textContent = "";
+  const close = () => { box.hidden = true; };
+  items.forEach((it) => {
+    const b = el("button", "item");
+    b.appendChild(el("b", null, it.label));
+    if (it.sub) b.appendChild(el("span", null, it.sub));
+    b.addEventListener("click", () => { close(); it.on(); });
+    body.appendChild(b);
+  });
+  $("sheetCancel").onclick = close;
+  box.onclick = (e) => { if (e.target === box) close(); };
+  box.hidden = false;
+}
+async function exportSheet() {
+  const rows = await allRecords();
+  if (!rows.length) { toast("Nothing to export yet."); return; }
+  const units = new Set(rows.map((r) => r.code)).size;
+  const photos = rows.reduce((n, r) => n + photosOf(r).length, 0);
+  sheet("Export", [
+    { label: "PDF report · compact photos", sub: `${units} unit${units === 1 ? "" : "s"} · ${rows.length} visit${rows.length === 1 ? "" : "s"} · ${photos} photo${photos === 1 ? "" : "s"} at ~900 px`, on: () => exportPdf({ compact: true }) },
+    { label: "PDF report · full-size photos", sub: "same report, original photo resolution · larger file", on: () => exportPdf({ compact: false }) },
+    { label: "All events · CSV", sub: "one row per visit, every field", on: () => exportData("csv") },
+    { label: "Latest per unit · CSV", sub: "one row per serial, last known position", on: () => exportData("units") },
+    { label: "Envelopes · JSON", sub: "the 2016 payload shape, one per visit", on: () => exportData("json") }
+  ]);
+}
+
 async function exportPdf(opts) {
   const o = opts || {};
   let rows = await allRecords();
   if (o.code) rows = rows.filter((r) => r.code === o.code);
   if (!rows.length) { toast("Nothing to report yet."); return; }
   const back = app.screen;
-  const compact = $("setPdfCompact") ? $("setPdfCompact").checked : true;
+  const compact = o.compact != null ? o.compact : ($("setPdfCompact") ? $("setPdfCompact").checked : true);
   await go("sending");
   $("rail").hidden = true;
   $("sendTitle").textContent = "Building PDF report";
