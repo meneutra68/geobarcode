@@ -1574,18 +1574,21 @@ function renderSite(editing) {
   if (editing) setTimeout(() => (has ? i2 : i1).focus(), 30);
 }
 
-/* QR handoff: the app's own address, so a phone camera can open it here.
-   Meaningless inside the native shell or from a file:// path, so it hides. */
-const ARTIFACT_URL = "https://claude.ai/code/artifact/c0588c63-d66c-4bc7-9388-ccab2b96e87a";
+/* QR handoff: the address a phone should open. The app is published at
+   PUBLIC_URL (GitHub Pages); a copy running from disk or inside a preview
+   frame still points there, so the code is useful wherever it is seen.
+   Only a copy served from its own https origin advertises itself instead. */
+const PUBLIC_URL = "https://meneutra68.github.io/geobarcode/";
 function inHostedPreview() {
   if (window.top === window.self) return false;
   const anc = (location.ancestorOrigins && location.ancestorOrigins[0]) || document.referrer || "";
   return /claude\.ai/.test(anc) || /claude/.test(location.hostname);
 }
 function appUrl() {
-  if (inHostedPreview()) return ARTIFACT_URL;     /* the frame's own address is not the shareable one */
+  const local = location.hostname === "localhost" || /^(127\.|192\.168\.|10\.)/.test(location.hostname);
+  if (location.protocol !== "https:" || inHostedPreview() || local) return PUBLIC_URL;
   const u = new URL(location.href);
-  u.hash = "";
+  u.hash = ""; u.search = "";
   return u.toString();
 }
 function qrPlaceholder(title, body) {
@@ -1611,11 +1614,6 @@ function renderQr() {
   plate.classList.remove("off");
   plate.querySelector(".qr-lab").textContent = "Open on phone";
   if (native || proto === "capacitor:") { plate.hidden = true; return; }
-  if (proto === "file:") {
-    qrPlaceholder("You are viewing this file straight from disk.",
-      "A phone cannot open a file:// path on your Mac, so there is no link to encode. Host GeoBarcode-web.html on any HTTPS address — Netlify Drop, GitHub Pages, an S3 bucket — open it from there, and the code appears here automatically pointing at that address.");
-    return;
-  }
   const url = appUrl();
 
   const cv = $("qrCanvas"), ctx = cv.getContext("2d");
@@ -1652,12 +1650,10 @@ function renderQr() {
       copyText(url);
     });
     row.append(copy, share); cap.appendChild(row);
-    let warn = "";
-    if (location.hostname === "localhost" || /^(127\.|192\.168\.|10\.)/.test(location.hostname))
-      warn = "This address is local to this machine. The phone must be on the same network, and the camera and GPS will only work over HTTPS.";
-    else if (inHostedPreview())
-      warn = "This is the hosted preview — the phone must be signed in to the same Claude account. Host GeoBarcode-web.html on your own HTTPS origin and this code will point there instead.";
-    if (warn) cap.appendChild(el("div", "note quiet", warn));
+    if (url === PUBLIC_URL && !location.href.startsWith(PUBLIC_URL))
+      cap.appendChild(el("div", "note quiet", location.protocol === "file:"
+        ? "You are viewing this copy from disk. The code points at the published app, which is the same build hosted on HTTPS — that is where the phone's camera and GPS work."
+        : "This copy is running inside a preview frame. The code points at the published app on its own HTTPS address, where the phone's camera and GPS work."));
     lightbox(cv.toDataURL("image/png"), cap);
   };
 }
